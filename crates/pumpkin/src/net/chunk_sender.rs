@@ -1,6 +1,7 @@
 use bytes::Bytes;
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::collections::BinaryHeap;
 use std::sync::{Arc, Weak};
 
 use pumpkin_protocol::codec::var_int::VarInt;
@@ -126,22 +127,32 @@ impl ChunkSender {
         }
     }
 
-    fn collect_sorted_candidates(&self, level: &Level, center: Vector2<i32>) -> Vec<PreparedChunk> {
+    fn collect_nearest_candidates(
+        &self,
+        level: &Level,
+        center: Vector2<i32>,
+    ) -> Vec<PreparedChunk> {
         let quota_limit = self.send_quota.floor() as usize;
-        let mut sorted: Vec<Vector2<i32>> = self.pending_chunks.iter().copied().collect();
+        let mut nearest = BinaryHeap::with_capacity(quota_limit + 1);
 
-        sorted.sort_by_key(|pos| {
+        for pos in &self.pending_chunks {
+            if !level.loaded_chunks.contains_key(pos) {
+                continue;
+            }
             let dx = (pos.x - center.x).unsigned_abs() as u64;
             let dz = (pos.y - center.y).unsigned_abs() as u64;
-            dx * dx + dz * dz
-        });
+            let key = (dx * dx + dz * dz, pos.x, pos.y);
+            if nearest.len() < quota_limit {
+                nearest.push(key);
+            } else if nearest.peek().is_some_and(|farthest| key < *farthest) {
+                nearest.pop();
+                nearest.push(key);
+            }
+        }
 
         let mut ready = Vec::with_capacity(quota_limit);
-        for pos in sorted {
-            if ready.len() >= quota_limit {
-                break;
-            }
-
+        for (_, x, y) in nearest.into_sorted_vec() {
+            let pos = Vector2::new(x, y);
             if let Some(chunk) = level.loaded_chunks.get(&pos) {
                 ready.push(PreparedChunk {
                     position: pos,
@@ -171,7 +182,7 @@ impl ChunkSender {
             return None;
         }
 
-        let candidates = self.collect_sorted_candidates(level, player_chunk);
+        let candidates = self.collect_nearest_candidates(level, player_chunk);
         if candidates.is_empty() {
             return None;
         }
