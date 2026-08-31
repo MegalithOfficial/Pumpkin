@@ -1,14 +1,40 @@
 use super::ChunkPos;
+use crate::cylindrical_chunk_iterator::Cylindrical;
 use crate::level::SyncChunk;
-use crossbeam::channel::{Receiver, Sender};
+use crossbeam::atomic::AtomicCell;
+use crossbeam::channel::{Receiver, Sender, TrySendError};
 use std::sync::Arc;
 use std::sync::{Mutex, Weak};
 use tokio::sync::oneshot;
 
-#[expect(clippy::type_complexity)]
+type GlobalChunkMessage = (ChunkPos, Weak<crate::chunk::ChunkData>);
+
+const GLOBAL_LISTENER_CAPACITY: usize =
+    Cylindrical::get_offsets(pumpkin_data::chunk_view_lut::MAX_VIEW_DISTANCE).len();
+
+struct GlobalListenerRegistration {
+    sender: Sender<GlobalChunkMessage>,
+    watched: Arc<AtomicCell<Cylindrical>>,
+}
+
+pub struct GlobalChunkListener {
+    receiver: Receiver<GlobalChunkMessage>,
+    watched: Arc<AtomicCell<Cylindrical>>,
+}
+
+impl GlobalChunkListener {
+    pub fn update_watched(&self, watched: Cylindrical) {
+        self.watched.store(watched);
+    }
+
+    pub fn try_recv(&self) -> Result<GlobalChunkMessage, crossbeam::channel::TryRecvError> {
+        self.receiver.try_recv()
+    }
+}
+
 pub struct ChunkListener {
     single: Mutex<Vec<(ChunkPos, oneshot::Sender<SyncChunk>)>>,
-    global: Mutex<Vec<Sender<(ChunkPos, Weak<crate::chunk::ChunkData>)>>>,
+    global: Mutex<Vec<Arc<GlobalListenerRegistration>>>,
 }
 
 impl Default for ChunkListener {
@@ -35,13 +61,20 @@ impl ChunkListener {
         rx
     }
 
-    pub fn add_global_chunk_listener(&self) -> Receiver<(ChunkPos, Weak<crate::chunk::ChunkData>)> {
-        let (tx, rx) = crossbeam::channel::unbounded();
+    pub fn add_global_chunk_listener(&self, watched: Cylindrical) -> GlobalChunkListener {
+        let (tx, rx) = crossbeam::channel::bounded(GLOBAL_LISTENER_CAPACITY);
+        let watched = Arc::new(AtomicCell::new(watched));
         self.global
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(tx);
-        rx
+            .push(Arc::new(GlobalListenerRegistration {
+                sender: tx,
+                watched: watched.clone(),
+            }));
+        GlobalChunkListener {
+            receiver: rx,
+            watched,
+        }
     }
 
     pub fn process_new_chunk(&self, pos: ChunkPos, chunk: &SyncChunk) {
@@ -63,25 +96,36 @@ impl ChunkListener {
                 i += 1;
             }
         }
-        {
-            let weak = Arc::downgrade(chunk);
-            let mut global = self
-                .global
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let mut i = 0;
-            let mut len = global.len();
-            while i < len {
-                if matches!(global[i].send((pos, weak.clone())), Ok(())) {
-                    // log::debug!("global listener {i} send {pos:?}");
-                } else {
-                    // log::debug!("one global listener dropped");
-                    global.remove(i);
-                    len -= 1;
-                    continue;
-                }
-                i += 1;
+        self.process_global(pos, &Arc::downgrade(chunk));
+    }
+
+    fn process_global(&self, pos: ChunkPos, chunk: &Weak<crate::chunk::ChunkData>) {
+        let listeners = self
+            .global
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let mut disconnected = Vec::new();
+
+        for listener in listeners {
+            if !listener.watched.load().is_within_distance(pos.x, pos.y) {
+                continue;
             }
+            match listener.sender.try_send((pos, chunk.clone())) {
+                Ok(()) | Err(TrySendError::Full(_)) => {}
+                Err(TrySendError::Disconnected(_)) => disconnected.push(listener),
+            }
+        }
+
+        if !disconnected.is_empty() {
+            self.global
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .retain(|listener| {
+                    !disconnected
+                        .iter()
+                        .any(|closed| Arc::ptr_eq(listener, closed))
+                });
         }
     }
 }

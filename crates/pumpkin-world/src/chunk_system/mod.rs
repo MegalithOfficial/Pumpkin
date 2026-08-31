@@ -33,7 +33,7 @@ mod tests;
 
 pub use channel::LevelChannel;
 pub use chunk_holder::ChunkHolder;
-pub use chunk_listener::ChunkListener;
+pub use chunk_listener::{ChunkListener, GlobalChunkListener};
 pub use chunk_loading::ChunkLoading;
 pub use chunk_state::{Chunk, StagedChunkEnum};
 pub use dag::DAG;

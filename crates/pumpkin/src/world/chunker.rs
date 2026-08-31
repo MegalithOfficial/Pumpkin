@@ -57,6 +57,12 @@ pub fn update_position(player: &Arc<Player>) {
         return;
     }
 
+    player
+        .chunk_listener
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .update_watched(new_cylindrical);
+
     match player.client.as_ref() {
         ClientPlatform::Java(java_client) => {
             java_client.try_send_packet(&CCenterChunk {

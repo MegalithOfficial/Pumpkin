@@ -7,7 +7,7 @@ use std::f64::consts::TAU;
 use std::num::NonZero;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicI8, AtomicI32, AtomicU8, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::plugin::api::events::enchantment::{EnchantItemEvent, PrepareItemEnchantEvent};
@@ -15,7 +15,6 @@ use crate::world::scoreboard::{BedrockScoreboard, Scoreboard};
 use advancement::PlayerAdvancement;
 use arc_swap::ArcSwap;
 use crossbeam::atomic::AtomicCell;
-use crossbeam::channel::Receiver;
 use crossbeam::queue::SegQueue;
 use pumpkin_data::dimension::Dimension;
 use pumpkin_inventory::merchant::merchant_screen_handler::MerchantScreenHandler;
@@ -41,7 +40,7 @@ use pumpkin_protocol::bedrock::server::{
 use pumpkin_protocol::codec::item_stack_seralizer::ItemStackSerializer;
 use pumpkin_util::translation::Locale;
 use pumpkin_util::version::JavaMinecraftVersion;
-use pumpkin_world::chunk::ChunkData;
+use pumpkin_world::chunk_system::GlobalChunkListener;
 use pumpkin_world::inventory::Inventory;
 use tokio::task::JoinHandle;
 use tracing::{debug, warn};
@@ -482,7 +481,7 @@ pub struct Player {
     pub item_cooldowns: std::sync::Mutex<HashMap<String, ItemCooldown>>,
     pub experience_pick_up_delay: Mutex<u32>,
     pub chunk_sender: Mutex<crate::net::ChunkSender>,
-    pub chunk_listener: Mutex<Receiver<(Vector2<i32>, Weak<ChunkData>)>>,
+    pub chunk_listener: Mutex<GlobalChunkListener>,
     pub held_chunk_tickets: Mutex<Option<(i8, i8)>>,
     pub chunk_send_epoch: AtomicU32,
     pub has_played_before: AtomicBool,
@@ -778,7 +777,12 @@ impl Player {
             experience_points: AtomicI32::new(0),
             item_cooldowns: std::sync::Mutex::new(HashMap::new()),
             chunk_sender: Mutex::new(crate::net::ChunkSender::new()),
-            chunk_listener: Mutex::new(world.level.chunk_listener.add_global_chunk_listener()),
+            chunk_listener: Mutex::new(world.level.chunk_listener.add_global_chunk_listener(
+                Cylindrical::new(
+                    Vector2::new(0, 0),
+                    NonZero::new(1).unwrap_or(NonZero::<u8>::MIN),
+                ),
+            )),
             held_chunk_tickets: Mutex::new(None),
             chunk_send_epoch: AtomicU32::new(0),
             last_sent_xp: AtomicI32::new(-1),
@@ -1117,7 +1121,10 @@ impl Player {
     ) {
         self.clean_up_chunk_tickets(old_level);
         if let Ok(mut listener) = self.chunk_listener.lock() {
-            *listener = new_world.level.chunk_listener.add_global_chunk_listener();
+            *listener = new_world
+                .level
+                .chunk_listener
+                .add_global_chunk_listener(self.watched_section.load());
         }
         self.chunk_send_epoch.fetch_add(1, Ordering::Relaxed);
         if let Ok(mut sender) = self.chunk_sender.lock() {
@@ -2454,11 +2461,9 @@ impl Player {
         if let Ok(listener) = self.chunk_listener.try_lock()
             && let Ok(mut sender) = self.chunk_sender.try_lock()
         {
-            let center = self.get_entity().chunk_pos.load();
-            let view_dist =
-                std::num::NonZeroI32::from(self.watched_section.load().view_distance).get();
+            let watched = self.watched_section.load();
             while let Ok((pos, _)) = listener.try_recv() {
-                if (pos.x - center.x).abs().max((pos.y - center.y).abs()) <= view_dist {
+                if watched.is_within_distance(pos.x, pos.y) {
                     sender.enqueue_chunk(pos);
                 }
             }
