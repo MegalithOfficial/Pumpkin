@@ -2458,9 +2458,15 @@ impl Player {
         {
             *xp -= 1;
         }
-        if let Ok(listener) = self.chunk_listener.try_lock()
-            && let Ok(mut sender) = self.chunk_sender.try_lock()
         {
+            let listener = self
+                .chunk_listener
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut sender = self
+                .chunk_sender
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let watched = self.watched_section.load();
             while let Ok((pos, _)) = listener.try_recv() {
                 if watched.is_within_distance(pos.x, pos.y) {
@@ -2477,9 +2483,11 @@ impl Player {
             ClientPlatform::Bedrock(_) => JavaMinecraftVersion::V_1_20_2,
         };
 
-        let prepared_batch = self.chunk_sender.try_lock().ok().and_then(|mut sender| {
-            sender.prepare_batch(&world.level, player_chunk, epoch, version)
-        });
+        let prepared_batch = self
+            .chunk_sender
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .prepare_batch(&world.level, player_chunk, epoch, version);
 
         let total_sent_chunks = if let Some(batch) = prepared_batch {
             match self.client.as_ref() {
@@ -2488,10 +2496,12 @@ impl Player {
                     let encoded =
                         crate::net::ChunkSender::encode_batch(&batch, &mut per_player_cache);
                     let current_epoch = self.chunk_send_epoch.load(Ordering::Relaxed);
-                    self.chunk_sender.try_lock().map_or(0, |mut sender| {
-                        sender.commit_batch(&batch, &encoded, &self.client, current_epoch);
-                        sender.sent_chunks_count()
-                    })
+                    let mut sender = self
+                        .chunk_sender
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    sender.commit_batch(&batch, &encoded, &self.client, current_epoch);
+                    sender.sent_chunks_count()
                 }
                 ClientPlatform::Bedrock(_) => {
                     let chunks: Vec<_> = batch.chunks.into_iter().map(|c| c.chunk).collect();
@@ -2500,14 +2510,16 @@ impl Player {
                         client.send_chunks(&chunks).await;
                     });
                     self.chunk_sender
-                        .try_lock()
-                        .map_or(0, |s| s.sent_chunks_count())
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .sent_chunks_count()
                 }
             }
         } else {
             self.chunk_sender
-                .try_lock()
-                .map_or(0, |s| s.sent_chunks_count())
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .sent_chunks_count()
         };
 
         if let ClientPlatform::Bedrock(bedrock_client) = self.client.as_ref()
