@@ -61,7 +61,6 @@ mod game_rules;
 mod instrument;
 mod item;
 mod jukebox_song;
-pub mod loot_table;
 mod map_color;
 mod map_decoration;
 mod material_rule;
@@ -183,7 +182,6 @@ pub fn main() {
             "configured_features_generated.rs",
         ),
         (carver::build, "carver.rs"),
-        (loot_table::build, "loot_table.rs"),
         (map_color::build, "map_color.rs"),
         (map_decoration::build, "map_decoration.rs"),
         (dye_color::build, "dye_color.rs"),

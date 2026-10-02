@@ -276,6 +276,7 @@ mod tests {
 
     #[test]
     fn deferred_mineshaft_loot_is_preserved_until_unpacked() {
+        pumpkin_world::vanilla_pack::install_test_pack();
         let inventory = std::sync::Arc::new(MinecartInventory::new(27));
         let mut source = NbtCompound::new();
         source.put_string(

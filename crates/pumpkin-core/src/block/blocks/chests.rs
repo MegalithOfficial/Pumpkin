@@ -5,7 +5,6 @@ use crate::block::entities::chest::ChestBlockEntity;
 use pumpkin_data::BlockStateId;
 use pumpkin_data::block_properties::{ChestLikeProperties, ChestType, HorizontalFacing};
 use pumpkin_data::entity::EntityPose;
-use pumpkin_data::loot_table::get_loot_table;
 use pumpkin_data::{Block, BlockDirection, translation};
 use pumpkin_inventory::Inventory;
 use pumpkin_inventory::double::DoubleInventory;
@@ -30,7 +29,7 @@ use crate::block::{
 use crate::entity::EntityBase;
 use crate::entity::player::Player;
 use crate::world::World;
-use crate::world::loot::fill_chest_inventory;
+use crate::world::loot::{fill_chest_inventory_handle, get_loot_table};
 use pumpkin_data::BlockState;
 
 struct ChestScreenFactory(Arc<dyn Inventory>);
@@ -189,7 +188,7 @@ fn get_chest_screen_handler_factory(
             && let Some(table) = get_loot_table(&loot_key)
             && let Some(inv) = entity.clone().get_inventory()
         {
-            fill_chest_inventory(&inv, table, seed);
+            fill_chest_inventory_handle(&inv, &table, seed);
             inv.mark_dirty();
         }
     };

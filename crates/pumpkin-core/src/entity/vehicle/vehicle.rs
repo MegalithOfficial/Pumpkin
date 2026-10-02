@@ -174,10 +174,10 @@ impl VehicleEntity {
         if entity_drops {
             let resource_name = self.entity.entity_type.resource_name;
             let key = format!("minecraft:entities/{resource_name}");
-            if let Some(loot_table) = pumpkin_data::loot_table::get_loot_table(&key) {
+            if let Some(loot_table) = crate::world::loot::get_loot_table(&key) {
                 let pos = self.entity.block_pos.load();
                 let seed: i64 = rand::random();
-                for stack in crate::world::loot::generate_loot(loot_table, seed) {
+                for stack in loot_table.generate_loot(seed) {
                     world.drop_stack(&pos, stack);
                 }
             }

@@ -5,7 +5,6 @@ use pumpkin_data::item::Item;
 use pumpkin_data::item_stack::ItemStack;
 pub use pumpkin_util::loot_table::{
     DynamicLootCondition, DynamicLootEntry, DynamicLootPool, DynamicLootTable, LootBonusFormula,
-    LootCondition, LootEntry, LootPool, LootTable,
 };
 use pumpkin_util::random::{RandomImpl, xoroshiro128::Xoroshiro};
 
@@ -97,51 +96,6 @@ fn check_dynamic_condition(
     }
 }
 
-fn check_condition(
-    cond: LootCondition,
-    has_silk_touch: bool,
-    has_shears: bool,
-    fortune_level: i32,
-    params: &LootContextParameters,
-    rng: &mut Xoroshiro,
-) -> bool {
-    match cond {
-        LootCondition::None => true,
-        LootCondition::SilkTouch => has_silk_touch,
-        LootCondition::NoSilkTouch => !has_silk_touch,
-        LootCondition::Shears => has_shears,
-        LootCondition::SilkTouchOrShears => has_silk_touch || has_shears,
-        LootCondition::NoSilkTouchOrShears => !has_silk_touch && !has_shears,
-        LootCondition::KilledByPlayer => params.killed_by_player.unwrap_or(false),
-        LootCondition::SurvivesExplosion => params
-            .explosion_radius
-            .is_none_or(|radius| rng.next_f32() <= 1.0 / radius),
-        LootCondition::RandomChance { chance } => rng.next_f32() < chance,
-        LootCondition::RandomChanceWithEnchantedBonus {
-            unenchanted_chance,
-            enchanted_chance_base,
-            enchanted_chance_per_level_above_first,
-        } => {
-            let chance = if fortune_level > 0 {
-                enchanted_chance_base
-                    + enchanted_chance_per_level_above_first * (fortune_level - 1) as f32
-            } else {
-                unenchanted_chance
-            };
-            rng.next_f32() < chance
-        }
-        LootCondition::TableBonus { chances } => {
-            let index = (fortune_level.max(0) as usize).min(chances.len().saturating_sub(1));
-            chances
-                .get(index)
-                .is_some_and(|chance| rng.next_f32() < *chance)
-        }
-        LootCondition::AllOf(conditions) => conditions
-            .iter()
-            .all(|c| check_condition(*c, has_silk_touch, has_shears, fortune_level, params, rng)),
-    }
-}
-
 fn apply_bonus_formula(
     base_count: i32,
     bonus: LootBonusFormula,
@@ -178,130 +132,6 @@ fn apply_bonus_formula(
         }
     }
 }
-
-#[must_use]
-pub fn generate_loot(table: &LootTable, seed: i64) -> Vec<ItemStack> {
-    generate_loot_with_context(table, seed, &LootContextParameters::default())
-}
-
-#[must_use]
-pub fn generate_loot_with_context(
-    table: &LootTable,
-    seed: i64,
-    params: &LootContextParameters,
-) -> Vec<ItemStack> {
-    let mut rng = Xoroshiro::from_seed(seed as u64);
-    let mut items_to_place: Vec<ItemStack> = Vec::new();
-
-    let has_silk_touch = params.tool.as_ref().is_some_and(|tool| {
-        pumpkin_data::Enchantment::from_name("silk_touch")
-            .is_some_and(|e| tool.get_enchantment_level(e) > 0)
-    });
-
-    let has_shears = params.tool.as_ref().is_some_and(|tool| {
-        let name = tool
-            .item
-            .registry_key
-            .strip_prefix("minecraft:")
-            .unwrap_or(tool.item.registry_key);
-        name == "shears"
-    });
-
-    let fortune_level = params.tool.as_ref().map_or(0, |tool| {
-        let fortune = pumpkin_data::Enchantment::from_name("fortune")
-            .map_or(0, |e| tool.get_enchantment_level(e));
-        let looting = pumpkin_data::Enchantment::from_name("looting")
-            .map_or(0, |e| tool.get_enchantment_level(e));
-        fortune.max(looting)
-    });
-
-    for pool in table.pools {
-        if !check_condition(
-            pool.condition,
-            has_silk_touch,
-            has_shears,
-            fortune_level,
-            params,
-            &mut rng,
-        ) {
-            continue;
-        }
-
-        let eligible_entries: Vec<&LootEntry> = pool
-            .entries
-            .iter()
-            .filter(|e| {
-                check_condition(
-                    e.condition,
-                    has_silk_touch,
-                    has_shears,
-                    fortune_level,
-                    params,
-                    &mut rng,
-                )
-            })
-            .collect();
-
-        if eligible_entries.is_empty() && pool.empty_weight == 0 {
-            continue;
-        }
-
-        let range = pool.max_rolls - pool.min_rolls;
-        let rolls = pool.min_rolls
-            + if range > 0 {
-                rng.next_bounded_i32(range + 1)
-            } else {
-                0
-            };
-
-        for _ in 0..rolls {
-            let entry_weight: i32 = eligible_entries.iter().map(|e| e.weight).sum();
-            let total_weight = entry_weight + pool.empty_weight;
-            if total_weight == 0 {
-                continue;
-            }
-
-            let mut pick = rng.next_bounded_i32(total_weight);
-
-            pick -= pool.empty_weight;
-            if pick < 0 {
-                continue;
-            }
-
-            for entry in &eligible_entries {
-                pick -= entry.weight;
-                if pick < 0 {
-                    let count_range = entry.max_count - entry.min_count;
-                    let base_count = entry.min_count
-                        + if count_range > 0 {
-                            rng.next_bounded_i32(count_range + 1)
-                        } else {
-                            0
-                        };
-
-                    let mut final_count = base_count;
-                    if let Some(bonus) = entry.bonus_formula {
-                        final_count =
-                            apply_bonus_formula(final_count, bonus, fortune_level, &mut rng);
-                    }
-
-                    if final_count > 0 {
-                        let item_key = entry.item.strip_prefix("minecraft:").unwrap_or(entry.item);
-
-                        if let Some(item) = Item::from_registry_key(item_key) {
-                            items_to_place.push(ItemStack::new(final_count as u8, item));
-                        }
-                    }
-                    break;
-                }
-            }
-        }
-    }
-
-    items_to_place
-}
-
-pub use generate_loot as generate_chest_loot;
 
 #[must_use]
 pub fn generate_dynamic_loot(table: &DynamicLootTable, seed: i64) -> Vec<ItemStack> {
@@ -440,22 +270,13 @@ fn roll_dynamic_entries(
     }
 }
 
-/// A handle to either a compile-time static loot table or a datapack dynamic loot table.
+/// A shared handle to a loot table from a datapack or the vanilla pack.
 #[derive(Clone, Debug)]
-pub enum LootTableHandle {
-    Static(&'static LootTable),
-    Dynamic(std::sync::Arc<DynamicLootTable>),
-}
-
-impl From<&'static LootTable> for LootTableHandle {
-    fn from(t: &'static LootTable) -> Self {
-        Self::Static(t)
-    }
-}
+pub struct LootTableHandle(pub std::sync::Arc<DynamicLootTable>);
 
 impl From<std::sync::Arc<DynamicLootTable>> for LootTableHandle {
     fn from(t: std::sync::Arc<DynamicLootTable>) -> Self {
-        Self::Dynamic(t)
+        Self(t)
     }
 }
 
@@ -475,16 +296,10 @@ impl LootTableHandle {
     }
 }
 
+/// Looks up a vanilla loot table, ignoring datapack overrides.
 #[must_use]
 pub fn get_loot_table(key: &str) -> Option<LootTableHandle> {
-    let full_key = if key.contains(':') {
-        key.to_string()
-    } else {
-        format!("minecraft:{key}")
-    };
-    pumpkin_data::loot_table::get_loot_table(key)
-        .or_else(|| pumpkin_data::loot_table::get_loot_table(&full_key))
-        .map(LootTableHandle::Static)
+    pumpkin_world::vanilla_pack::loot::get(key).map(LootTableHandle)
 }
 
 #[must_use]
@@ -493,10 +308,7 @@ pub fn generate_loot_from_handle(
     seed: i64,
     params: &LootContextParameters,
 ) -> Vec<ItemStack> {
-    match handle {
-        LootTableHandle::Static(table) => generate_loot_with_context(table, seed, params),
-        LootTableHandle::Dynamic(table) => generate_dynamic_loot_with_context(table, seed, params),
-    }
+    generate_dynamic_loot_with_context(&handle.0, seed, params)
 }
 
 fn place_items_in_chest(
@@ -537,15 +349,6 @@ pub fn fill_chest_inventory_handle(
     seed: i64,
 ) {
     let items_to_place = generate_loot_from_handle(handle, seed, &LootContextParameters::default());
-    place_items_in_chest(inventory, items_to_place, seed);
-}
-
-pub fn fill_chest_inventory(
-    inventory: &std::sync::Arc<dyn pumpkin_inventory::Inventory>,
-    table: &LootTable,
-    seed: i64,
-) {
-    let items_to_place = generate_loot(table, seed);
     place_items_in_chest(inventory, items_to_place, seed);
 }
 

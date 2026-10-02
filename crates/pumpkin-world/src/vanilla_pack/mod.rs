@@ -30,8 +30,10 @@ use std::sync::OnceLock;
 use sha2::{Digest, Sha256};
 use xxhash_rust::xxh64::xxh64;
 
+pub mod loot;
+
 const MAGIC: [u8; 8] = *b"PKVANPAK";
-pub const FORMAT_VERSION: u16 = 1;
+pub const FORMAT_VERSION: u16 = 2;
 const HEADER_LEN: usize = 64;
 const RECORD_LEN: usize = 32;
 // keep a corrupt header from making us allocate gigabytes
@@ -43,6 +45,15 @@ const MAX_ENTRY_LEN: u32 = 256 * 1024 * 1024;
 pub enum ResourceKind {
     Structure = 1,
     LootTable = 2,
+}
+
+impl ResourceKind {
+    const fn encoding(self) -> Encoding {
+        match self {
+            Self::Structure => Encoding::Raw,
+            Self::LootTable => Encoding::Postcard,
+        }
+    }
 }
 
 /// Groups of content a pack holds, recorded as a bitmask in the header.
@@ -69,10 +80,21 @@ pub mod module {
     }
 }
 
+/// Jar files the pack is built from.
+#[derive(Clone, Copy)]
+enum JarFile {
+    Structure,
+    LootTable,
+    Predicate,
+    ItemTag,
+}
+
 // directory and extension under data/<namespace>/ in the jar
-const JAR_SOURCES: [(&str, &str, ResourceKind); 2] = [
-    ("structure/", ".nbt", ResourceKind::Structure),
-    ("loot_table/", ".json", ResourceKind::LootTable),
+const JAR_FILES: [(&str, &str, JarFile); 4] = [
+    ("structure/", ".nbt", JarFile::Structure),
+    ("loot_table/", ".json", JarFile::LootTable),
+    ("predicate/", ".json", JarFile::Predicate),
+    ("tags/item/", ".json", JarFile::ItemTag),
 ];
 const MAX_INNER_JAR_LEN: u64 = 512 * 1024 * 1024;
 
@@ -81,6 +103,9 @@ const MAX_INNER_JAR_LEN: u64 = 512 * 1024 * 1024;
 pub enum Encoding {
     /// Copied from the jar as is.
     Raw = 0,
+    /// Converted at prepare time and stored with `postcard`. Any change to the stored types
+    /// needs a [`FORMAT_VERSION`] bump.
+    Postcard = 1,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -103,6 +128,8 @@ pub enum PackError {
     BadJar(&'static str),
     #[error("server jar is not a valid zip: {0}")]
     Zip(#[from] zip::result::ZipError),
+    #[error("failed to convert loot table '{0}': {1}")]
+    LootTable(String, String),
 }
 
 pub struct VanillaPack {
@@ -251,7 +278,7 @@ impl VanillaPack {
             return Ok(None);
         };
         let r = Self::record(index, i);
-        if r[1] != Encoding::Raw as u8 {
+        if r[1] != kind.encoding() as u8 {
             return Err(PackError::CorruptEntry(key.to_owned()));
         }
         let offset = u64::from_le_bytes(read_array(r, 8));
@@ -334,7 +361,7 @@ impl PackWriter {
             let key_off = u32::try_from(keys.len()).map_err(|_| PackError::CorruptIndex)?;
             let len = u32::try_from(bytes.len()).map_err(|_| PackError::CorruptIndex)?;
             index.push(*kind as u8);
-            index.push(Encoding::Raw as u8);
+            index.push(kind.encoding() as u8);
             index.extend_from_slice(&key_len.to_le_bytes());
             index.extend_from_slice(&key_off.to_le_bytes());
             index.extend_from_slice(&offset.to_le_bytes());
@@ -412,9 +439,11 @@ pub fn build_from_server_jar(
 
     let mut jar = zip::ZipArchive::new(io::Cursor::new(inner_bytes))?;
     let mut writer = PackWriter::default();
+    let mut loot = loot::LootSources::default();
     for i in 0..jar.len() {
         let mut file = jar.by_index(i)?;
-        let Some((kind, key)) = jar_resource(file.name()) else {
+        let name = file.name().to_owned();
+        let Some((source, namespace, path)) = jar_file(&name) else {
             continue;
         };
         if file.size() > u64::from(MAX_ENTRY_LEN) {
@@ -422,7 +451,33 @@ pub fn build_from_server_jar(
         }
         let mut bytes = Vec::with_capacity(file.size() as usize);
         file.read_to_end(&mut bytes)?;
-        writer.add(kind, key, bytes);
+        let map = match source {
+            JarFile::Structure => {
+                writer.add(
+                    ResourceKind::Structure,
+                    format!("{namespace}:{path}"),
+                    bytes,
+                );
+                continue;
+            }
+            // loot tables only ever reference vanilla's own files
+            _ if namespace != "minecraft" => continue,
+            JarFile::LootTable => &mut loot.loot_tables,
+            JarFile::Predicate => &mut loot.predicates,
+            JarFile::ItemTag => &mut loot.item_tags,
+        };
+        let json = String::from_utf8(bytes).map_err(|_| PackError::BadJar("json is not utf-8"))?;
+        map.insert(path.to_owned(), json);
+    }
+
+    let tables = loot
+        .convert_all()
+        .map_err(|(path, e)| PackError::LootTable(format!("minecraft:{path}"), e.to_string()))?;
+    for (path, table) in tables {
+        let key = format!("minecraft:{path}");
+        let bytes =
+            loot::encode(&table).map_err(|e| PackError::LootTable(key.clone(), e.to_string()))?;
+        writer.add(ResourceKind::LootTable, key, bytes);
     }
 
     let count = writer.entries.len();
@@ -430,12 +485,12 @@ pub fn build_from_server_jar(
     Ok(count)
 }
 
-// data/minecraft/structure/igloo/top.nbt -> (Structure, minecraft:igloo/top)
-fn jar_resource(name: &str) -> Option<(ResourceKind, String)> {
+// data/minecraft/structure/igloo/top.nbt -> (Structure, "minecraft", "igloo/top")
+fn jar_file(name: &str) -> Option<(JarFile, &str, &str)> {
     let (namespace, rest) = name.strip_prefix("data/")?.split_once('/')?;
-    JAR_SOURCES.iter().find_map(|(dir, ext, kind)| {
+    JAR_FILES.iter().find_map(|(dir, ext, source)| {
         let path = rest.strip_prefix(dir)?.strip_suffix(ext)?;
-        Some((*kind, format!("{namespace}:{path}")))
+        Some((*source, namespace, path))
     })
 }
 

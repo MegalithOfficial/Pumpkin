@@ -38,6 +38,7 @@ bitflags.workspace = true
 arc-swap.workspace = true
 
 dashmap.workspace = true
+postcard.workspace = true
 
 # Compression
 flate2.workspace = true

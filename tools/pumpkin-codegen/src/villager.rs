@@ -37,6 +37,26 @@ fn default_amount() -> f32 {
     1.0
 }
 
+/// Item modifiers hold either a single entry or a list of them.
+fn one_or_many<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    // `Many` goes first, a json value would also match `One`
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany<T> {
+        Many(Vec<T>),
+        One(T),
+    }
+
+    Ok(match OneOrMany::deserialize(deserializer)? {
+        OneOrMany::Many(values) => values,
+        OneOrMany::One(value) => vec![value],
+    })
+}
+
 #[derive(Deserialize, Clone)]
 struct TradeJson {
     wants: TradeItemJson,
@@ -50,7 +70,7 @@ struct TradeJson {
     #[serde(
         rename = "given_item_modifier",
         default,
-        deserialize_with = "crate::loot_table::one_or_many"
+        deserialize_with = "one_or_many"
     )]
     given_item_modifiers: Vec<Value>,
     merchant_predicate: Option<Value>,

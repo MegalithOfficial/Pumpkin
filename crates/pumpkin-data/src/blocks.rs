@@ -3,7 +3,6 @@ use crate::{
     tag::{RegistryKey, Tag, Taggable},
 };
 use pumpkin_util::{
-    loot_table::LootTable,
     math::{experience::Experience, position::BlockPos, vector3::Vector3},
     random::hash_block_pos,
     resource_location::{FromResourceLocation, ResourceLocation, ToResourceLocation},
