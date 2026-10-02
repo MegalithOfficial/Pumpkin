@@ -28,6 +28,9 @@ pub enum TemplateError {
 
     #[error("Invalid palette index: {0}")]
     InvalidPaletteIndex(u32),
+
+    #[error("Failed to read vanilla pack: {0}")]
+    Pack(#[from] crate::vanilla_pack::PackError),
 }
 
 /// Settings used when placing, transforming, or querying a [`StructureTemplate`].
@@ -1356,14 +1359,14 @@ mod tests {
         assert_eq!(entry_with_props.properties.len(), 2);
     }
 
-    /// Loads a real template from the shipped 26.3 datapack, which names the palette keys id and
+    /// Loads a real template from the prepared 26.3 vanilla pack, which names the palette keys id and
     /// properties instead of Name and Properties.
     #[test]
     fn load_26_3_template() {
-        let bytes = include_bytes!(
-            "../../../../../../assets/datapack/data/minecraft/structure/igloo/top.nbt"
-        );
-        let template = StructureTemplate::from_nbt_bytes(bytes).expect("failed to load template");
+        let bytes = super::super::template_bytes("minecraft:igloo/top")
+            .expect("failed to read the vanilla pack")
+            .expect("igloo/top is missing from the vanilla pack");
+        let template = StructureTemplate::from_nbt_bytes(&bytes).expect("failed to load template");
 
         let palette = &template.palette;
         assert!(!palette.is_empty(), "the palette must not be empty");

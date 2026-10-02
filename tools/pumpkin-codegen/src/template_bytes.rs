@@ -12,18 +12,13 @@ struct EmbeddedPack {
     path: PathBuf,
 }
 
+const VANILLA_PACK: &str = "vanilla";
+
 pub fn build() -> TokenStream {
-    let base_packs = [("vanilla", Path::new("../../assets/datapack"))];
+    // only Pumpkin's test datapacks get embedded, vanilla templates come from vanilla.pak
     let container_dir = Path::new("../../assets/tests/datapacks");
 
     let mut packs = Vec::new();
-    for (id, path) in base_packs {
-        packs.push(EmbeddedPack {
-            id: id.to_string(),
-            path: path.to_path_buf(),
-        });
-    }
-
     if container_dir.is_dir() {
         let mut entries = fs::read_dir(container_dir)
             .expect("read container dir")
@@ -42,7 +37,7 @@ pub fn build() -> TokenStream {
     }
 
     let mut templates: BTreeMap<String, (bool, String, String)> = BTreeMap::new();
-    let mut embedded_pack_names = Vec::new();
+    let mut embedded_pack_names = vec![VANILLA_PACK.to_owned()];
 
     for pack in &packs {
         let data_dir = pack.path.join("data");

@@ -700,19 +700,25 @@ impl DatapackManager {
             .map_err(|error| format!("Structure loader task failed: {error}"))?;
         }
 
-        // Fall back to compile-time embedded structures.
+        // fall back to the vanilla pack and Pumpkin's embedded test templates
         let structure_id = format!("{namespace}:{path}");
 
-        if let Some(bytes) =
-            pumpkin_world::generation::structure::template::template_bytes(&structure_id)
-        {
+        let bytes = tokio::task::spawn_blocking({
+            let structure_id = structure_id.clone();
+            move || pumpkin_world::generation::structure::template::template_bytes(&structure_id)
+        })
+        .await
+        .map_err(|error| format!("Structure loader task failed: {error}"))?
+        .map_err(|error| format!("Failed to load structure '{structure_id}': {error}"))?;
+
+        if let Some(bytes) = bytes {
             return read_gzip_compound_tag(std::io::Cursor::new(bytes)).map_err(|error| {
-                format!("Failed to parse embedded structure '{structure_id}': {error}")
+                format!("Failed to parse built in structure '{structure_id}': {error}")
             });
         }
 
         Err(format!(
-            "Structure '{resource_location}' was not found in any enabled datapack or embedded resources"
+            "Structure '{resource_location}' was not found in any enabled datapack or built in resources"
         ))
     }
 

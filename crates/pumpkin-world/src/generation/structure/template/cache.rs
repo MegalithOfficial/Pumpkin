@@ -1,13 +1,13 @@
-//! Template caching for embedded structure templates.
-//!
-//! This module provides a lazy-loading cache for structure templates that are
-//! embedded in the binary at compile time using `include_bytes!`.
+//! Lazy cache for structure templates. Vanilla ones come from the
+//! [`vanilla_pack`](crate::vanilla_pack), Pumpkin's own test templates are embedded.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use dashmap::DashMap;
 
 use super::{StructureTemplate, structure_template::TemplateError};
+use crate::vanilla_pack::{self, ResourceKind};
 
 /// Vanilla's implicit namespace.
 const DEFAULT_NAMESPACE: &str = "minecraft";
@@ -95,8 +95,8 @@ impl TemplateCache {
 
         let mut template = if let Some(bytes) = self.dynamic_templates.get(&key) {
             StructureTemplate::from_nbt_bytes(&bytes)?
-        } else if let Some(bytes) = Self::load_template_bytes(&key) {
-            StructureTemplate::from_nbt_bytes(bytes)?
+        } else if let Some(bytes) = load_template_bytes(&key)? {
+            StructureTemplate::from_nbt_bytes(&bytes)?
         } else {
             return Err(TemplateError::MissingField("template file not found"));
         };
@@ -135,11 +135,16 @@ impl TemplateCache {
     pub fn clear(&self) {
         self.cache.clear();
     }
+}
 
-    /// Loads raw template bytes from embedded resources.
-    fn load_template_bytes(path: &str) -> Option<&'static [u8]> {
-        pumpkin_data::template_bytes::get_template_bytes(path)
+fn load_template_bytes(key: &str) -> Result<Option<Cow<'static, [u8]>>, TemplateError> {
+    if let Some(bytes) = pumpkin_data::template_bytes::get_template_bytes(key) {
+        return Ok(Some(Cow::Borrowed(bytes)));
     }
+    let Some(pack) = vanilla_pack::installed() else {
+        return Ok(None);
+    };
+    Ok(pack.read(ResourceKind::Structure, key)?.map(Cow::Owned))
 }
 
 /// Global template cache instance.
@@ -163,14 +168,23 @@ pub fn get_template(name: &str) -> Option<Arc<StructureTemplate>> {
     global_cache().get(name)
 }
 
-/// Returns a list of all available template names that can be loaded.
+/// Returns every loadable template name.
 ///
-/// These are derived from the embedded structure files at compile time.
 /// Names are fully qualified (e.g. `minecraft:village/plains/houses/...`).
 /// Useful for tab-completion in commands.
 #[must_use]
-pub const fn all_template_names() -> &'static [&'static str] {
-    pumpkin_data::template_bytes::all_template_names()
+pub fn all_template_names() -> Vec<String> {
+    let mut names: Vec<String> = pumpkin_data::template_bytes::all_template_names()
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect();
+    if let Some(pack) = vanilla_pack::installed() {
+        match pack.keys(ResourceKind::Structure) {
+            Ok(keys) => names.extend(keys.map(str::to_owned)),
+            Err(e) => tracing::error!("Failed to list vanilla templates: {e}"),
+        }
+    }
+    names
 }
 
 /// Returns a list of all available structure names for `/place structure` tab-completion.
@@ -185,10 +199,13 @@ pub const fn all_pool_names() -> &'static [&'static str] {
     pumpkin_data::template_pool::StaticTemplatePool::all_names()
 }
 
-/// Returns raw NBT bytes for an embedded structure template.
-#[must_use]
-pub fn template_bytes(name: &str) -> Option<&'static [u8]> {
-    pumpkin_data::template_bytes::get_template_bytes(&canonicalize(name))
+/// Returns the raw NBT of a built in template.
+///
+/// # Errors
+///
+/// Returns an error if the vanilla pack can't be read.
+pub fn template_bytes(name: &str) -> Result<Option<Cow<'static, [u8]>>, TemplateError> {
+    load_template_bytes(&canonicalize(name))
 }
 
 #[must_use]

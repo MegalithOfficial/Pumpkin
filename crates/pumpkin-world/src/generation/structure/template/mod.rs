@@ -402,7 +402,7 @@ mod tests {
     fn structure_void_is_never_placed() {
         let mut placed_templates = 0;
 
-        for name in all_template_names() {
+        for name in &all_template_names() {
             let Some(template) = get_template(name) else {
                 continue;
             };
