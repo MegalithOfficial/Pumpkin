@@ -14,6 +14,7 @@ pub mod banned_player;
 pub mod datapack;
 pub mod player_server;
 pub mod usercache;
+pub mod vanilla_pack;
 pub mod whitelist;
 
 pub struct VanillaData {

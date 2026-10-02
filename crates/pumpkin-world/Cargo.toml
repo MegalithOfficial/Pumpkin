@@ -41,6 +41,8 @@ dashmap.workspace = true
 
 # Compression
 flate2.workspace = true
+zip.workspace = true
+hex.workspace = true
 lz4-java-wrc.workspace = true
 ruzstd.workspace = true
 xxhash-rust = { version = "0.8", features = ["xxh64"] }

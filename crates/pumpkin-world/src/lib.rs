@@ -16,6 +16,7 @@ pub mod lighting;
 pub mod poi;
 pub mod test_instance;
 pub mod tick;
+pub mod vanilla_pack;
 pub mod world;
 pub mod world_info;
 

@@ -76,6 +76,14 @@ async fn main() {
 
     pumpkin_core::init_logger(&config.advanced);
 
+    if let Err(error) =
+        pumpkin_core::data::vanilla_pack::load_or_prepare(&exec_dir, &config.advanced.vanilla_data)
+            .await
+    {
+        tracing::error!("Could not prepare vanilla data: {error}");
+        exit(1);
+    }
+
     info!(
         "{}",
         TextComponent::text(format!(

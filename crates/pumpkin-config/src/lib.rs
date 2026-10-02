@@ -28,6 +28,8 @@ pub mod recipe;
 
 /// Resource pack configuration options.
 pub mod resource_pack;
+/// Vanilla data pack configuration options.
+pub mod vanilla_data;
 
 pub use chat::{AntiSpamConfig, ChatConfig};
 pub use commands::{CommandOverride, CommandsConfig};
@@ -69,6 +71,7 @@ use advancement::AdvancementConfig;
 use networking::NetworkingConfig;
 use player_data::PlayerDataConfig;
 use resource_pack::ResourcePackConfig;
+use vanilla_data::VanillaDataConfig;
 use world::LevelConfig;
 
 /// Root configuration container for Pumpkin server settings.
@@ -176,6 +179,8 @@ pub struct AdvancedConfiguration {
     pub plugins: PluginsConfig,
     /// Advancement configuration
     pub advancement: AdvancementConfig,
+    /// Where the prepared vanilla data is kept.
+    pub vanilla_data: VanillaDataConfig,
 }
 
 /// Basic configuration for core server settings.
