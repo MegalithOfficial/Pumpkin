@@ -17,6 +17,7 @@ use pumpkin_data::{
     item::Item,
     item_stack::ItemStack,
     sound::{Sound, SoundCategory},
+    statistic::StatisticCategory,
     tag,
     tag::Taggable,
 };
@@ -126,12 +127,12 @@ impl ChiseledBookshelfBlock {
         slot: i8,
         item: &mut ItemStack,
     ) {
-        // TODO: Increment used stats for chiseled bookshelf on the player
+        player.increment_stat(StatisticCategory::Used, i32::from(item.item.id), 1);
 
         let sound = if item.get_item() == &Item::ENCHANTED_BOOK {
-            Sound::BlockChiseledBookshelfPickupEnchanted
+            Sound::BlockChiseledBookshelfInsertEnchanted
         } else {
-            Sound::BlockChiseledBookshelfPickup
+            Sound::BlockChiseledBookshelfInsert
         };
 
         entity.set_book(
