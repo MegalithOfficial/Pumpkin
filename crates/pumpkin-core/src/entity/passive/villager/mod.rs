@@ -1,3 +1,4 @@
+use crossbeam::atomic::AtomicCell;
 use rustc_hash::FxHashMap;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, Ordering};
 use std::sync::{Arc, Weak};
@@ -5,6 +6,7 @@ use uuid::Uuid;
 
 use crate::block::blocks::bed::BedBlock;
 use pumpkin_data::Enchantment;
+use pumpkin_data::HorizontalFacingExt;
 use pumpkin_data::attributes::Attributes;
 use pumpkin_data::block_properties::{BedPart, WhiteBedLikeProperties as BedProperties};
 use pumpkin_data::effect::StatusEffect;
@@ -355,6 +357,7 @@ pub struct VillagerEntity {
     pub job_site: std::sync::Mutex<Option<BlockPos>>,
     pub job_site_pending: AtomicBool,
     pub home_pos: std::sync::Mutex<Option<BlockPos>>,
+    pub last_woken: AtomicCell<Option<i64>>,
     pub self_weak: std::sync::Mutex<Option<Weak<Self>>>,
 }
 
@@ -393,6 +396,50 @@ impl VillagerEntity {
         metadata
     }
 
+    pub fn stop_sleeping(&self, world: &Arc<World>) {
+        let entity = self.get_entity();
+        if let Some(bed_pos) = self.get_home_pos() {
+            let (block, state) = world.get_block_and_state(&bed_pos);
+            if block.has_tag(&pumpkin_data::tag::Block::MINECRAFT_BEDS) {
+                let bed_props = BedProperties::from_state_id(state.id);
+                if bed_props.occupied {
+                    BedBlock::set_occupied(false, world, block, &bed_pos, state.id);
+                }
+                let stand_up = BedBlock::find_stand_up_position(
+                    world,
+                    entity.entity_type,
+                    &bed_pos,
+                    bed_props.facing.to_block_direction(),
+                    entity.yaw.load(),
+                )
+                .unwrap_or_else(|| bed_pos.up().to_f64().add_raw(0.5, 0.1, 0.5));
+                let look = bed_pos
+                    .to_f64()
+                    .add_raw(0.5, 0.0, 0.5)
+                    .sub(&stand_up)
+                    .normalize();
+                let yaw =
+                    pumpkin_util::math::wrap_degrees_f64(look.z.atan2(look.x).to_degrees() - 90.0)
+                        as f32;
+                entity.set_pos(stand_up);
+                entity.set_rotation(yaw, 0.0);
+            }
+        }
+
+        entity.set_pose(EntityPose::Standing);
+        entity.set_synced_data(
+            pumpkin_data::tracked_data::villager::SLEEPING_POS_ID,
+            None::<BlockPos>,
+        );
+
+        let game_time = world
+            .level_time
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .world_age;
+        self.last_woken.store(Some(game_time));
+    }
+
     #[allow(clippy::too_many_lines)]
     pub fn new(entity: Entity) -> Arc<Self> {
         let mob_entity = MobEntity::new(entity);
@@ -424,6 +471,7 @@ impl VillagerEntity {
             job_site: std::sync::Mutex::new(None),
             job_site_pending: AtomicBool::new(false),
             home_pos: std::sync::Mutex::new(None),
+            last_woken: AtomicCell::new(None),
             self_weak: std::sync::Mutex::new(None),
         };
         let mob_arc = Arc::new(villager);
@@ -1674,12 +1722,7 @@ impl VillagerEntity {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                 if is_sleeping {
-                    // Wake up if bed was broken
-                    self.get_entity().set_pose(EntityPose::Standing);
-                    self.get_entity().set_synced_data(
-                        pumpkin_data::tracked_data::villager::SLEEPING_POS_ID,
-                        None::<BlockPos>,
-                    );
+                    self.stop_sleeping(&world);
                 }
             }
         }
@@ -1762,15 +1805,23 @@ impl VillagerEntity {
                     let dist = home_pos
                         .to_f64()
                         .squared_distance_to_vec(&self.get_entity().pos.load());
-                    if dist <= 4.0 {
+                    let woken_recently = self
+                        .last_woken
+                        .load()
+                        .is_some_and(|woken| (1..100).contains(&(game_time - woken)));
+                    if dist <= 4.0 && !woken_recently {
                         // Within 2 blocks (squared distance 4.0)
                         let (block, state) = world.get_block_and_state(&home_pos);
                         if block.has_tag(&pumpkin_data::tag::Block::MINECRAFT_BEDS) {
                             let bed_props = BedProperties::from_state_id(state.id);
-                            if !bed_props.occupied {
+                            if !bed_props.occupied
+                                && let Some(sleep_pos) = BedBlock::sleep_pos(state, &home_pos)
+                            {
                                 // Make bed occupied
                                 BedBlock::set_occupied(true, &world, block, &home_pos, state.id);
 
+                                self.get_entity().set_pos(sleep_pos);
+                                self.get_entity().set_velocity(Vector3::default());
                                 self.get_entity().set_pose(EntityPose::Sleeping);
                                 self.get_entity().set_synced_data(
                                     pumpkin_data::tracked_data::villager::SLEEPING_POS_ID,
@@ -1781,28 +1832,10 @@ impl VillagerEntity {
                     }
                 }
             } else if is_sleeping {
-                // It is day, wake up!
-                let (block, state) = world.get_block_and_state(&home_pos);
-                if block.has_tag(&pumpkin_data::tag::Block::MINECRAFT_BEDS) {
-                    let bed_props = BedProperties::from_state_id(state.id);
-                    if bed_props.occupied {
-                        BedBlock::set_occupied(false, &world, block, &home_pos, state.id);
-                    }
-                }
-
-                self.get_entity().set_pose(EntityPose::Standing);
-                self.get_entity().set_synced_data(
-                    pumpkin_data::tracked_data::villager::SLEEPING_POS_ID,
-                    None::<BlockPos>,
-                );
+                self.stop_sleeping(&world);
             }
         } else if is_sleeping {
-            // Wake up during the day
-            self.get_entity().set_pose(EntityPose::Standing);
-            self.get_entity().set_synced_data(
-                pumpkin_data::tracked_data::villager::SLEEPING_POS_ID,
-                None::<BlockPos>,
-            );
+            self.stop_sleeping(&world);
         }
 
         // 2. Iron Golem spawning logic (only for adults)

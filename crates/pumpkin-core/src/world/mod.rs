@@ -2416,6 +2416,82 @@ impl World {
         }
     }
 
+    fn non_climbable_floor_height(&self, pos: &BlockPos) -> f64 {
+        let shape_top = |pos: &BlockPos| {
+            let state = self.get_block_state(pos);
+            let block = Block::from_state_id(state.id);
+            let climbable = block.has_tag(&pumpkin_data::tag::Block::MINECRAFT_CLIMBABLE)
+                || (block.has_tag(&pumpkin_data::tag::Block::MINECRAFT_TRAPDOORS)
+                    && pumpkin_data::block_properties::OakTrapdoorLikeProperties::from_state_id(
+                        state.id,
+                    )
+                    .open);
+            if climbable {
+                None
+            } else {
+                state
+                    .get_block_collision_shapes_at(pos)
+                    .map(|shape| shape.max.y)
+                    .reduce(f64::max)
+            }
+        };
+        shape_top(pos).unwrap_or_else(|| {
+            shape_top(&pos.down())
+                .filter(|below| *below >= 1.0)
+                .map_or(f64::NEG_INFINITY, |below| below - 1.0)
+        })
+    }
+
+    pub fn find_safe_dismount_location(
+        &self,
+        entity_type: &'static EntityType,
+        pos: &BlockPos,
+        check_dangerous: bool,
+    ) -> Option<Vector3<f64>> {
+        let dangerous = |pos: &BlockPos| {
+            crate::world::natural_spawner::is_block_dangerous(
+                entity_type,
+                self.get_block_state(pos),
+            )
+        };
+        if check_dangerous && dangerous(pos) {
+            return None;
+        }
+        let floor_height = self.non_climbable_floor_height(pos);
+        if floor_height.is_infinite() || floor_height >= 1.0 {
+            return None;
+        }
+        if check_dangerous && floor_height <= 0.0 && dangerous(&pos.down()) {
+            return None;
+        }
+
+        let position = pos.to_f64().add_raw(0.5, floor_height, 0.5);
+        let bounding_box = BoundingBox::new_from_pos(
+            position.x,
+            position.y,
+            position.z,
+            &Entity::type_dimensions(entity_type),
+        );
+        if !self.is_space_empty(bounding_box) {
+            return None;
+        }
+        if entity_type == &EntityType::PLAYER
+            && (self
+                .get_block(pos)
+                .has_tag(&pumpkin_data::tag::Block::MINECRAFT_INVALID_SPAWN_INSIDE)
+                || self
+                    .get_block(&pos.up())
+                    .has_tag(&pumpkin_data::tag::Block::MINECRAFT_INVALID_SPAWN_INSIDE))
+        {
+            return None;
+        }
+        self.worldborder
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_box(&bounding_box)
+            .then_some(position)
+    }
+
     pub fn tick_spawning_chunk(
         self: &Arc<Self>,
         chunk_pos: Vector2<i32>,

@@ -1294,6 +1294,10 @@ impl LivingEntity {
         false
     }
 
+    pub fn is_sleeping(&self) -> bool {
+        self.entity.pose.load() == EntityPose::Sleeping
+    }
+
     pub fn is_immune_to_fall_damage(&self) -> bool {
         self.entity
             .entity_type
@@ -1427,7 +1431,7 @@ impl LivingEntity {
 
         let suffocating = self.entity.tick_block_collisions(caller);
 
-        if suffocating {
+        if suffocating && !self.is_sleeping() {
             caller.damage(caller, 1.0, DamageType::IN_WALL);
         }
 
@@ -3368,7 +3372,7 @@ impl EntityBase for LivingEntity {
             self.apply_travel_friction();
 
             let suffocating = self.entity.tick_block_collisions(caller);
-            if suffocating {
+            if suffocating && !self.is_sleeping() {
                 caller.damage(caller, 1.0, DamageType::IN_WALL);
             }
 

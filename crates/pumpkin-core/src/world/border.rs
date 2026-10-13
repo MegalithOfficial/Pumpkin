@@ -4,6 +4,7 @@ use pumpkin_protocol::java::client::play::{
 };
 
 use crate::net::java::JavaClient;
+use pumpkin_util::math::boundingbox::BoundingBox;
 
 use super::World;
 
@@ -140,6 +141,13 @@ impl Worldborder {
         let min_z = self.center_z - half;
         let max_z = self.center_z + half;
         x >= min_x && x < max_x && z >= min_z && z < max_z
+    }
+
+    #[must_use]
+    pub fn contains_box(&self, bounding_box: &BoundingBox) -> bool {
+        let epsilon = f64::from(1.0e-5f32);
+        self.contains(bounding_box.min.x, bounding_box.min.z)
+            && self.contains(bounding_box.max.x - epsilon, bounding_box.max.z - epsilon)
     }
 
     #[must_use]

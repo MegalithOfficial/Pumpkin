@@ -2166,9 +2166,12 @@ impl Player {
         // TODO: Stop riding
 
         self.get_entity().set_pose(EntityPose::Sleeping);
-        self.living_entity
-            .entity
-            .set_pos(bed_head_pos.to_f64().add_raw(0.5, 0.6875, 0.5));
+        let bed_state = self.world().get_block_state(&bed_head_pos);
+        if let Some(sleep_pos) =
+            crate::block::blocks::bed::BedBlock::sleep_pos(bed_state, &bed_head_pos)
+        {
+            self.living_entity.entity.set_pos(sleep_pos);
+        }
         self.get_entity().set_synced_data(
             pumpkin_data::tracked_data::player::SLEEPING_POS_ID,
             Some(bed_head_pos),

@@ -2,12 +2,15 @@ use std::sync::Arc;
 
 use crate::block::entities::bed::BedBlockEntity;
 use pumpkin_data::block_properties::BedPart;
-use pumpkin_data::entity::EntityType;
+use pumpkin_data::entity::{EntityPose, EntityType};
+use pumpkin_data::tag::Taggable;
 use pumpkin_data::translation;
-use pumpkin_data::{Block, BlockState, BlockStateId};
+use pumpkin_data::{Block, BlockDirection, BlockState, BlockStateId};
 use pumpkin_macros::pumpkin_block_from_tag;
 use pumpkin_util::GameMode;
+use pumpkin_util::math::boundingbox::BoundingBox;
 use pumpkin_util::math::position::BlockPos;
+use pumpkin_util::math::vector3::Vector3;
 use pumpkin_world::world::BlockFlags;
 
 use crate::block::OnLandedUponArgs;
@@ -18,6 +21,7 @@ use crate::block::{
     BlockBehaviour, BrokenArgs, CanPlaceAtArgs, NormalUseArgs, OnPlaceArgs, OnStateReplacedArgs,
     PathComputationType, PlacedArgs,
 };
+use crate::entity::passive::villager::VillagerEntity;
 use crate::entity::{Entity, EntityBase, player::Player};
 use crate::world::World;
 
@@ -216,6 +220,19 @@ impl BedBlock {
             return BlockActionResult::SuccessServer;
         }
 
+        if bed_props.occupied {
+            if !Self::kick_villager_out_of_bed(world, &bed_head_pos) {
+                player.send_system_message_raw(
+                    &pumpkin_macros::translate_cross!(
+                        translation::java::BLOCK_MINECRAFT_BED_OCCUPIED,
+                        translation::bedrock::TILE_BED_OCCUPIED
+                    ),
+                    true,
+                );
+            }
+            return BlockActionResult::SuccessServer;
+        }
+
         let is_dark = world.is_dark_outside();
         let can_sleep = world.dimension.bed_rule.can_sleep(is_dark);
         let can_set_spawn = world.dimension.bed_rule.can_set_spawn(is_dark);
@@ -239,20 +256,6 @@ impl BedBlock {
                 &pumpkin_macros::translate_cross!(
                     translation::java::BLOCK_MINECRAFT_BED_OBSTRUCTED,
                     translation::bedrock::TILE_BED_OBSTRUCTED
-                ),
-                true,
-            );
-            return BlockActionResult::SuccessServer;
-        }
-
-        // Make sure the bed is not occupied
-        if bed_props.occupied {
-            // TODO: Wake up villager
-
-            player.send_system_message_raw(
-                &pumpkin_macros::translate_cross!(
-                    translation::java::BLOCK_MINECRAFT_BED_OCCUPIED,
-                    translation::bedrock::TILE_BED_OCCUPIED
                 ),
                 true,
             );
@@ -354,6 +357,137 @@ impl BedBlock {
 }
 
 impl BedBlock {
+    fn get_sleep_height(state: &BlockState) -> Option<f64> {
+        state
+            .get_block_outline_shapes()
+            .map(|shape| shape.max.y)
+            .reduce(f64::max)
+    }
+
+    #[must_use]
+    pub fn sleep_pos(state: &BlockState, bed_pos: &BlockPos) -> Option<Vector3<f64>> {
+        Self::get_sleep_height(state)
+            .map(|height| bed_pos.to_f64().add_raw(0.5, height + 0.125, 0.5))
+    }
+
+    pub fn find_stand_up_position(
+        world: &World,
+        entity_type: &'static EntityType,
+        pos: &BlockPos,
+        forward: BlockDirection,
+        yaw: f32,
+    ) -> Option<Vector3<f64>> {
+        let right = forward.rotate_clockwise();
+        let side = if right.is_facing_angle(yaw) {
+            right.opposite()
+        } else {
+            right
+        };
+        if Self::is_bunk_bed(world, pos) {
+            return Self::find_bunk_bed_stand_up_position(world, entity_type, pos, forward, side);
+        }
+        let surround = Self::bed_surround_stand_up_offsets(forward, side);
+        let above = Self::bed_above_stand_up_offsets(forward);
+        let offsets: Vec<(i32, i32)> = surround.into_iter().chain(above).collect();
+        Self::find_stand_up_position_at_offset(world, entity_type, pos, &offsets, true).or_else(
+            || Self::find_stand_up_position_at_offset(world, entity_type, pos, &offsets, false),
+        )
+    }
+
+    fn is_bunk_bed(world: &World, pos: &BlockPos) -> bool {
+        let below = world.get_block(&pos.down());
+        below.has_tag(&pumpkin_data::tag::Block::MINECRAFT_BEDS) || below == &Block::STRAW_BED
+    }
+
+    fn find_bunk_bed_stand_up_position(
+        world: &World,
+        entity_type: &'static EntityType,
+        pos: &BlockPos,
+        forward: BlockDirection,
+        side: BlockDirection,
+    ) -> Option<Vector3<f64>> {
+        let surround = Self::bed_surround_stand_up_offsets(forward, side);
+        let above = Self::bed_above_stand_up_offsets(forward);
+        let below = pos.down();
+        [true, false].into_iter().find_map(|check_dangerous| {
+            Self::find_stand_up_position_at_offset(
+                world,
+                entity_type,
+                pos,
+                &surround,
+                check_dangerous,
+            )
+            .or_else(|| {
+                Self::find_stand_up_position_at_offset(
+                    world,
+                    entity_type,
+                    &below,
+                    &surround,
+                    check_dangerous,
+                )
+            })
+            .or_else(|| {
+                Self::find_stand_up_position_at_offset(
+                    world,
+                    entity_type,
+                    pos,
+                    &above,
+                    check_dangerous,
+                )
+            })
+        })
+    }
+
+    fn find_stand_up_position_at_offset(
+        world: &World,
+        entity_type: &'static EntityType,
+        pos: &BlockPos,
+        offsets: &[(i32, i32)],
+        check_dangerous: bool,
+    ) -> Option<Vector3<f64>> {
+        offsets.iter().find_map(|&(x, z)| {
+            let offset_pos = BlockPos::new(pos.0.x + x, pos.0.y, pos.0.z + z);
+            world.find_safe_dismount_location(entity_type, &offset_pos, check_dangerous)
+        })
+    }
+
+    fn bed_surround_stand_up_offsets(
+        forward: BlockDirection,
+        side: BlockDirection,
+    ) -> [(i32, i32); 10] {
+        let (fx, fz) = (forward.to_offset().x, forward.to_offset().z);
+        let (sx, sz) = (side.to_offset().x, side.to_offset().z);
+        [
+            (sx, sz),
+            (sx - fx, sz - fz),
+            (sx - fx * 2, sz - fz * 2),
+            (-fx * 2, -fz * 2),
+            (-sx - fx * 2, -sz - fz * 2),
+            (-sx - fx, -sz - fz),
+            (-sx, -sz),
+            (-sx + fx, -sz + fz),
+            (fx, fz),
+            (sx + fx, sz + fz),
+        ]
+    }
+
+    fn bed_above_stand_up_offsets(forward: BlockDirection) -> [(i32, i32); 2] {
+        let offset = forward.to_offset();
+        [(0, 0), (-offset.x, -offset.z)]
+    }
+
+    fn kick_villager_out_of_bed(world: &Arc<World>, bed_head_pos: &BlockPos) -> bool {
+        for entity in world.get_entities_at_box(&BoundingBox::from_block(bed_head_pos)) {
+            if let Some(villager) = entity.cast_any().downcast_ref::<VillagerEntity>()
+                && villager.get_entity().pose.load() == EntityPose::Sleeping
+            {
+                villager.stop_sleeping(world);
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn set_occupied(
         occupied: bool,
         world: &Arc<World>,

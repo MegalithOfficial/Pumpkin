@@ -1110,7 +1110,10 @@ fn is_valid_spawn_floor(state: &'static BlockState, entity_type: &'static Entity
     }
 }
 
-fn is_block_dangerous(entity_type: &'static EntityType, state: &'static BlockState) -> bool {
+pub(crate) fn is_block_dangerous(
+    entity_type: &'static EntityType,
+    state: &'static BlockState,
+) -> bool {
     let block = Block::from_state_id(state.id);
     if !entity_type.fire_immune && is_burning_block(block) {
         return true;

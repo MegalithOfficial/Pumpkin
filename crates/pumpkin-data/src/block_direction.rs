@@ -310,6 +310,15 @@ impl BlockDirection {
     }
 
     #[must_use]
+    pub fn is_facing_angle(&self, y_angle: f32) -> bool {
+        let radians = y_angle * (std::f32::consts::PI / 180.0);
+        let dx = -pumpkin_util::math::sin(radians);
+        let dz = pumpkin_util::math::cos(radians);
+        let normal = self.to_offset();
+        normal.x as f32 * dx + normal.z as f32 * dz > 0.0
+    }
+
+    #[must_use]
     pub const fn rotate_clockwise(&self) -> Self {
         match self {
             Self::East => Self::South,
