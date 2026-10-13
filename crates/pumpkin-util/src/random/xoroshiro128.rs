@@ -23,6 +23,7 @@ pub struct Xoroshiro {
 }
 
 impl Xoroshiro {
+    pub fn trace_state(&self) -> String { format!("{:x}:{:x}", self.lo, self.hi) }
     population_seed_fn!();
 
     /// Creates a new Xoroshiro generator from the given seed.

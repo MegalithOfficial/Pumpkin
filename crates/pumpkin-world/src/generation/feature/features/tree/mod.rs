@@ -77,6 +77,29 @@ impl FifoSet {
     }
 }
 
+/// Order of `TreeDecorator.Context`: a Java `HashSet<BlockPos>` stable sorted by Y.
+pub(crate) fn decorator_order(positions: Vec<BlockPos>) -> Vec<BlockPos> {
+    let mut seen = std::collections::HashSet::with_capacity(positions.len());
+    let mut ordered: Vec<BlockPos> = positions.into_iter().filter(|p| seen.insert(*p)).collect();
+
+    let mut capacity: usize = 16;
+    while ordered.len() > capacity / 4 * 3 {
+        capacity *= 2;
+    }
+    let bucket = |pos: &BlockPos| {
+        let hash = pos
+            .0
+            .y
+            .wrapping_add(pos.0.z.wrapping_mul(31))
+            .wrapping_mul(31)
+            .wrapping_add(pos.0.x) as u32;
+        (hash ^ (hash >> 16)) as usize & (capacity - 1)
+    };
+    ordered.sort_by_key(bucket);
+    ordered.sort_by_key(|p| p.0.y);
+    ordered
+}
+
 impl TreeFeature {
     pub fn generate<T: GenerationCache>(
         &self,
@@ -85,16 +108,16 @@ impl TreeFeature {
         random: &mut RandomGenerator,
         pos: BlockPos,
     ) -> bool {
-        let (mut log_positions, mut root_positions, mut foliage_positions) =
+        let (log_positions, root_positions, foliage_positions) =
             self.generate_main(block_registry, chunk, random, pos);
 
         if log_positions.is_empty() && foliage_positions.is_empty() {
             return false;
         }
 
-        log_positions.sort_by_key(|p| p.0.y);
-        root_positions.sort_by_key(|p| p.0.y);
-        foliage_positions.sort_by_key(|p| p.0.y);
+        let log_positions = decorator_order(log_positions);
+        let root_positions = decorator_order(root_positions);
+        let foliage_positions = decorator_order(foliage_positions);
 
         let mut decorations = Vec::new();
         for decorator in &self.decorators {

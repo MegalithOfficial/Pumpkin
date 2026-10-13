@@ -9,7 +9,6 @@ use crate::world::{BlockAccessor, WorldPortalExt};
 use pumpkin_config::lighting::LightingEngineConfig;
 use pumpkin_data::biome::Biome;
 use pumpkin_data::block_properties::is_air;
-use pumpkin_data::fluid::{Fluid, FluidState};
 use pumpkin_data::{Block, BlockState, BlockStateId};
 use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_util::HeightMap;
@@ -227,26 +226,6 @@ impl GenerationCache for Cache {
     fn get_center_chunk_mut(&mut self) -> &mut ProtoChunk {
         let mid = ((self.size * self.size) >> 1) as usize;
         self.chunks[mid].get_proto_chunk_mut()
-    }
-
-    fn get_fluid_and_fluid_state(&self, pos: &Vector3<i32>) -> (Fluid, FluidState) {
-        let id = GenerationCache::get_block_state(self, pos);
-
-        let Some(fluid) = Fluid::from_state_id(id) else {
-            let fluid = if id.is_waterlogged() {
-                Fluid::FLOWING_WATER
-            } else {
-                Fluid::EMPTY
-            };
-
-            let state = fluid.states[0].clone();
-            return (fluid, state);
-        };
-
-        //let state = fluid.get_state(id);
-        let state = fluid.states[0].clone();
-
-        (fluid.clone(), state)
     }
 
     fn get_block_state(&self, pos: &Vector3<i32>) -> BlockStateId {

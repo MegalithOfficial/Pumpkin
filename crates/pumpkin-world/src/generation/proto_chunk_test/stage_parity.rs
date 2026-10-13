@@ -42,6 +42,7 @@ impl crate::world::WorldPortalExt for TestBlockRegistry {
             || block == &Block::PEONY
             || block == &Block::WILDFLOWERS
             || block == &Block::BUSH
+            || block == &Block::FIREFLY_BUSH
             || block.has_tag(&pumpkin_data::tag::Block::MINECRAFT_SMALL_FLOWERS)
             || block.has_tag(&pumpkin_data::tag::Block::MINECRAFT_SAPLINGS)
         {
@@ -196,24 +197,6 @@ impl crate::generation::proto_chunk::GenerationCache for TestGridCache {
                 chunk.get_block_state(pos)
             })
     }
-    fn get_fluid_and_fluid_state(
-        &self,
-        _pos: &pumpkin_util::math::vector3::Vector3<i32>,
-    ) -> (pumpkin_data::fluid::Fluid, pumpkin_data::fluid::FluidState) {
-        (
-            pumpkin_data::fluid::Fluid::EMPTY,
-            pumpkin_data::fluid::FluidState {
-                height: 0.0,
-                level: 0,
-                is_empty: true,
-                blast_resistance: 0.0,
-                block_state_id: pumpkin_data::BlockStateId::AIR,
-                is_still: false,
-                is_source: false,
-                falling: false,
-            },
-        )
-    }
     fn set_block_state(
         &mut self,
         pos: &pumpkin_util::math::vector3::Vector3<i32>,
@@ -221,6 +204,9 @@ impl crate::generation::proto_chunk::GenerationCache for TestGridCache {
     ) {
         let cx = pos.x >> 4;
         let cz = pos.z >> 4;
+        if (cx - self.center_pos.0).abs() > 1 || (cz - self.center_pos.1).abs() > 1 {
+            return;
+        }
         if let Some(chunk) = self.chunks.get_mut(&(cx, cz)) {
             chunk.set_block_state(pos.x, pos.y, pos.z, block_state);
         }

@@ -16,6 +16,8 @@ pub struct BlockState {
     pub state_flags: u16,
     /// Cached flags for each of the 6 sides to speed up ambient occlusion and face culling.
     pub side_flags: u8,
+    /// Faces whose occlusion shape is a full square, one bit per `BlockDirection`.
+    pub face_occlusion_flags: u8,
     /// The note block instrument produced when this block is placed underneath one.
     pub instrument: NoteblockInstrument,
     /// The light level emitted by this block, ranging from 0 to 15.
@@ -155,6 +157,13 @@ impl BlockState {
             BlockDirection::West => self.side_flags & WEST_SIDE_SOLID != 0,
             BlockDirection::East => self.side_flags & EAST_SIDE_SOLID != 0,
         }
+    }
+
+    /// Whether the occlusion shape of `side` covers the whole face
+    /// (`Block.isShapeFullBlock(getFaceOcclusionShape(side))` in Java).
+    #[must_use]
+    pub const fn is_face_occluded(&self, side: BlockDirection) -> bool {
+        self.face_occlusion_flags & (1 << side as u8) != 0
     }
 
     /// Checks if a face of this block provides center support (`isFaceSturdy(..., Direction, SupportType.CENTER)` in Java).
@@ -319,6 +328,20 @@ impl BlockStateId {
     #[must_use]
     pub fn is_waterlogged(self) -> bool {
         self.to_block().is_waterlogged(self)
+    }
+
+    /// Whether this non-fluid state holds source water: waterlogged states and the
+    /// always-submerged plants that have no `waterlogged` property.
+    #[must_use]
+    pub fn holds_water_source(self) -> bool {
+        matches!(
+            self.to_block_id(),
+            BlockId::KELP
+                | BlockId::KELP_PLANT
+                | BlockId::SEAGRASS
+                | BlockId::TALL_SEAGRASS
+                | BlockId::BUBBLE_COLUMN
+        ) || self.is_waterlogged()
     }
 
     #[inline]

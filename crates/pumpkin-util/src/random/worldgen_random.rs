@@ -12,6 +12,7 @@ pub struct WorldgenRandom {
 }
 
 impl WorldgenRandom {
+    pub fn trace_state(&self) -> String { self.source.trace_state() }
     population_seed_fn!();
 
     #[must_use]

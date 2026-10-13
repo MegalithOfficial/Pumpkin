@@ -580,6 +580,8 @@ pub struct BlockState {
     pub state_flags: u16,
     /// Bitfield encoding which sides of the block are solid.
     pub side_flags: u8,
+    /// Bitfield of faces whose occlusion shape is full, indexed by direction ordinal.
+    pub face_occlusion_flags: u8,
     /// Name of the note-block instrument for this state. TODO: make this an enum
     pub instrument: String,
     /// Light level emitted by this state (0–15).
@@ -697,6 +699,8 @@ impl BlockState {
         let id = self.id;
         let state_flags = LitInt::new(&self.state_flags.to_string(), Span::call_site());
         let side_flags = LitInt::new(&self.side_flags.to_string(), Span::call_site());
+        let face_occlusion_flags =
+            LitInt::new(&self.face_occlusion_flags.to_string(), Span::call_site());
         let instrument = format_ident!("{}", self.instrument.to_upper_camel_case());
         let luminance = LitInt::new(&self.luminance.to_string(), Span::call_site());
         let hardness = self.hardness;
@@ -728,6 +732,7 @@ impl BlockState {
                 id: #id,
                 state_flags: #state_flags,
                 side_flags: #side_flags,
+                face_occlusion_flags: #face_occlusion_flags,
                 instrument: NoteblockInstrument::#instrument,
                 luminance: #luminance,
                 piston_behavior: #piston_behavior,

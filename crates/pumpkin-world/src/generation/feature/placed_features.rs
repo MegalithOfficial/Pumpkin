@@ -37,6 +37,11 @@ impl PlacedFeatureWrapper {
     }
 }
 
+thread_local! {
+    pub static TRACE_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    pub static TRACE_ON: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 pub struct PlacedFeature {
     /// The name of the configuired feature
     pub feature: Feature,
@@ -95,15 +100,17 @@ impl PlacedFeature {
             Feature::Named(name) => CONFIGURED_FEATURES.get(name),
             Feature::Inlined(feature) => Some(feature.as_ref()),
         };
+        TRACE_DEPTH.with(|d| d.set(d.get() + 1));
+        let depth = TRACE_DEPTH.with(std::cell::Cell::get);
 
-        generate_with_modifiers(
+        let result = generate_with_modifiers(
             chunk,
             0,
             self.placement.len(),
             random,
             pos,
             &|chunk, modifier_index, random, pos| {
-                self.placement[modifier_index].get_positions(
+                let it = self.placement[modifier_index].get_positions(
                     chunk,
                     block_registry,
                     min_y,
@@ -111,10 +118,22 @@ impl PlacedFeature {
                     feature_name,
                     random,
                     pos,
-                )
+                );
+                if depth == 1
+                    && TRACE_ON.with(std::cell::Cell::get)
+                    && std::env::var("TRACE_M").is_ok_and(|n| n == feature_name.to_name())
+                {
+                    let v: Vec<BlockPos> = it.collect();
+                    let s: String = v.iter().map(|p| format!("{},{},{};", p.0.x, p.0.y, p.0.z)).collect();
+                    let s = if s.len() > 60 { "n".to_string() } else { s };
+                    eprintln!("TRACE M {modifier_index} {},{},{} -> {s} {}", pos.0.x, pos.0.y, pos.0.z, random.trace_state());
+                    Box::new(v.into_iter())
+                } else {
+                    it
+                }
             },
             &|chunk, random, pos| {
-                feature.is_some_and(|feature| {
+                let r = feature.is_some_and(|feature| {
                     feature.generate(
                         chunk,
                         block_registry,
@@ -124,9 +143,19 @@ impl PlacedFeature {
                         random,
                         pos,
                     )
-                })
+                });
+                if TRACE_ON.with(std::cell::Cell::get) {
+                    if depth == 1 {
+                        eprintln!("TRACE F {} {} {} {} {r} {}", feature_name.to_name(), pos.0.x, pos.0.y, pos.0.z, random.trace_state());
+                    } else {
+                        eprintln!("TRACE N {depth} {} {} {} {r} {}", pos.0.x, pos.0.y, pos.0.z, random.trace_state());
+                    }
+                }
+                r
             },
-        )
+        );
+        TRACE_DEPTH.with(|d| d.set(d.get() - 1));
+        result
     }
 }
 

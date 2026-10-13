@@ -248,6 +248,10 @@ pub trait RandomImpl {
     }
 }
 
+impl RandomGenerator {
+    pub fn trace_state(&self) -> String { match self { Self::Worldgen(r) => r.trace_state(), Self::Xoroshiro(r) => r.trace_state(), _ => "?".into() } }
+}
+
 impl RandomImpl for RandomGenerator {
     #[inline]
     fn split(&mut self) -> Self {

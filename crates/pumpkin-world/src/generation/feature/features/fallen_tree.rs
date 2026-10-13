@@ -4,7 +4,7 @@ use pumpkin_util::{
     random::{RandomGenerator, RandomImpl},
 };
 
-use super::tree::{TreeFeature, decorator::TreeDecorator};
+use super::tree::{TreeFeature, decorator::TreeDecorator, decorator_order};
 use crate::{
     generation::{block_state_provider::BlockStateProvider, proto_chunk::GenerationCache},
     world::WorldPortalExt,
@@ -197,13 +197,14 @@ impl FallenTreeFeature {
         logs: &[BlockPos],
         decorators: &[TreeDecorator],
     ) {
+        let logs = decorator_order(logs.to_vec());
         for decorator in decorators {
             decorator.generate(
                 chunk,
                 block_registry,
                 random,
                 &[],
-                logs,
+                &logs,
                 &[],
                 &mut Vec::new(),
             );

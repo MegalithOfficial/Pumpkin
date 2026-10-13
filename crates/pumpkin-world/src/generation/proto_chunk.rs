@@ -77,7 +77,17 @@ pub trait GenerationCache: HeightLimitView + BlockAccessor {
     fn try_get_proto_chunk(&self, chunk_x: i32, chunk_z: i32) -> Option<&ProtoChunk>;
 
     fn get_block_state(&self, pos: &Vector3<i32>) -> BlockStateId;
-    fn get_fluid_and_fluid_state(&self, position: &Vector3<i32>) -> (Fluid, FluidState);
+    fn get_fluid_and_fluid_state(&self, position: &Vector3<i32>) -> (Fluid, FluidState) {
+        let id = GenerationCache::get_block_state(self, position);
+        let fluid = Fluid::from_state_id(id).unwrap_or_else(|| {
+            if id.holds_water_source() {
+                &Fluid::WATER
+            } else {
+                &Fluid::EMPTY
+            }
+        });
+        (fluid.clone(), fluid.states[0].clone())
+    }
     fn set_block_state(&mut self, pos: &Vector3<i32>, block_state: &BlockState);
     fn add_block_entity(&mut self, pos: &Vector3<i32>, nbt: NbtCompound);
     fn top_motion_blocking_block_height_exclusive(&self, x: i32, z: i32) -> i32;
@@ -1307,6 +1317,7 @@ impl ProtoChunk {
                     let mut random =
                         RandomGenerator::Worldgen(WorldgenRandom::from_seed(decorator_seed));
 
+                    crate::generation::feature::placed_features::TRACE_ON.with(|c| c.set(true));
                     feature.generate(
                         cache,
                         block_registry,
@@ -1316,6 +1327,7 @@ impl ProtoChunk {
                         &mut random,
                         origin_pos,
                     );
+                    crate::generation::feature::placed_features::TRACE_ON.with(|c| c.set(false));
                 }
             }
         }
@@ -1820,21 +1832,6 @@ impl GenerationCache for ProtoChunk {
     }
     fn get_block_state(&self, pos: &Vector3<i32>) -> BlockStateId {
         Self::get_block_state(self, pos)
-    }
-    fn get_fluid_and_fluid_state(&self, _pos: &Vector3<i32>) -> (Fluid, FluidState) {
-        (
-            Fluid::EMPTY,
-            FluidState {
-                height: 0.0,
-                level: 0,
-                is_empty: true,
-                blast_resistance: 0.0,
-                block_state_id: BlockStateId::AIR,
-                is_still: false,
-                is_source: false,
-                falling: false,
-            },
-        )
     }
     fn set_block_state(&mut self, pos: &Vector3<i32>, block_state: &BlockState) {
         Self::set_block_state(self, pos.x, pos.y, pos.z, block_state);
