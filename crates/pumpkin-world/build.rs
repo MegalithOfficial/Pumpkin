@@ -20,8 +20,17 @@ const GRADIENTS: [[f32; 3]; 16] = include!("../pumpkin-util/src/noise/perlin_gra
 /// - 120: Blackwell (RTX 50xx)
 const ALL_ARCHES: &[u32] = &[75, 80, 86, 89, 90, 100, 120];
 
+enum ArchSource {
+    Detected,
+    All,
+    Explicit,
+}
+
 enum ArchPlan {
-    Sass(Vec<u32>),
+    Sass {
+        source: ArchSource,
+        arches: Vec<u32>,
+    },
     PtxOnly(u32),
 }
 
@@ -55,7 +64,21 @@ fn main() -> io::Result<()> {
     let mut command = Command::new(&nvcc);
     command.args(["--fatbin", "-std=c++17", "--fmad=false"]);
     match plan {
-        ArchPlan::Sass(arches) => {
+        ArchPlan::Sass { source, arches } => {
+            let list = format_arches(&arches);
+            if let Some(&highest) = arches.last() {
+                match source {
+                    ArchSource::Detected => println!(
+                        "cargo:warning=CUDA worldgen: detected local GPU arch(es) {list}; building fatbin (+ compute_{highest} PTX)"
+                    ),
+                    ArchSource::All => println!(
+                        "cargo:warning=CUDA worldgen: building fatbin for all supported RTX/server arches: {list} (+ compute_{highest} PTX)"
+                    ),
+                    ArchSource::Explicit => println!(
+                        "cargo:warning=CUDA worldgen: building fatbin for requested arch(es): {list} (+ compute_{highest} PTX)"
+                    ),
+                }
+            }
             for &arch in &arches {
                 command.arg(format!("-gencode=arch=compute_{arch},code=sm_{arch}"));
             }
@@ -133,7 +156,10 @@ fn all_arches(supported: &[u32]) -> io::Result<ArchPlan> {
             "none of the predefined CUDA architectures are supported by this nvcc (supported: {supported:?})"
         )));
     }
-    Ok(ArchPlan::Sass(arches))
+    Ok(ArchPlan::Sass {
+        source: ArchSource::All,
+        arches,
+    })
 }
 
 fn parse_explicit_arches(spec: &str, supported: &[u32]) -> io::Result<ArchPlan> {
@@ -165,7 +191,10 @@ fn parse_explicit_arches(spec: &str, supported: &[u32]) -> io::Result<ArchPlan> 
             "PUMPKIN_CUDA_ARCH did not contain any architectures",
         ));
     }
-    Ok(ArchPlan::Sass(arches.into_iter().collect()))
+    Ok(ArchPlan::Sass {
+        source: ArchSource::Explicit,
+        arches: arches.into_iter().collect(),
+    })
 }
 
 fn detect_or_fallback(supported: &[u32]) -> io::Result<ArchPlan> {
@@ -183,7 +212,10 @@ fn detect_or_fallback(supported: &[u32]) -> io::Result<ArchPlan> {
             }
         }
         if !selected.is_empty() {
-            return Ok(ArchPlan::Sass(selected.into_iter().collect()));
+            return Ok(ArchPlan::Sass {
+                source: ArchSource::Detected,
+                arches: selected.into_iter().collect(),
+            });
         }
     }
 
@@ -192,9 +224,17 @@ fn detect_or_fallback(supported: &[u32]) -> io::Result<ArchPlan> {
         .copied()
         .ok_or_else(|| io::Error::other("no supported CUDA architectures"))?;
     println!(
-        "cargo:warning=Could not detect local NVIDIA GPU via nvidia-smi; building PTX for compute_{min_arch}. Set PUMPKIN_CUDA_ARCH=all or PUMPKIN_CUDA_ARCH=<sm> to target specific GPUs."
+        "cargo:warning=CUDA worldgen: could not detect local NVIDIA GPU via nvidia-smi; building PTX-only fallback for compute_{min_arch} (set PUMPKIN_CUDA_ARCH=all or PUMPKIN_CUDA_ARCH=<sm> to target specific GPUs)"
     );
     Ok(ArchPlan::PtxOnly(min_arch))
+}
+
+fn format_arches(arches: &[u32]) -> String {
+    arches
+        .iter()
+        .map(|arch| format!("sm_{arch}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn detect_host_gpu_arches() -> Option<Vec<u32>> {
