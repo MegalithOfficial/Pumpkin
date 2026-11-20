@@ -160,6 +160,8 @@ async fn main() {
     }
     print_support_links_and_warning();
 
+    pumpkin_world::generation::initialize_worldgen_backend(config.advanced.world.generation);
+
     tokio::spawn(async {
         if let Err(err) = setup_sighandler().await {
             tracing::error!("Unable to setup signal handlers: {err}");

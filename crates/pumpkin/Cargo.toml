@@ -27,6 +27,8 @@ tracing.workspace = true
 console-subscriber = { workspace = true, optional = true }
 
 [features]
+cuda-worldgen = ["pumpkin-world/cuda-worldgen"]
+cuda-worldgen-all = ["pumpkin-world/cuda-worldgen-all"]
 console-subscriber = ["dep:console-subscriber"]
 # Load plugins built against the v0.2 API. Off until the v0.2 ABI is finished.
 plugin-v0_2 = ["pumpkin-wasm-host/v0_2"]
