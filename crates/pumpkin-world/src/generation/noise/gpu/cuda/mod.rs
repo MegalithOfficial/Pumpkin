@@ -463,7 +463,7 @@ fn engine() -> Option<&'static Engine> {
 }
 
 fn resident_layers(engine: &Engine, noise: &Noise) -> Option<Arc<CudaSlice<CudaLayer>>> {
-    let resident = noise.resident.get_or_init(|| {
+    let resident = noise.resident.cuda.get_or_init(|| {
         let layers: Vec<_> = noise
             .sampler
             .layers()

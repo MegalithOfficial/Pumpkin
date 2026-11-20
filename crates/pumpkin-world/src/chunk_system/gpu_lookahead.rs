@@ -1,10 +1,7 @@
 use super::{ChunkPos, HashMapType, dag::NodeKey};
 use crate::generation::{
     generator::WorldGenerator,
-    noise::gpu::cuda::{
-        grid::{self, EarlyGridScope, PreparedGrid},
-        scheduled_lookahead_enabled,
-    },
+    noise::gpu::{self, EarlyGridScope, PreparedGrid},
 };
 use crate::level::Level;
 use crossbeam::channel::{Receiver, Sender, bounded};
@@ -63,13 +60,13 @@ impl Drop for Ticket {
 
 impl Lookahead {
     pub(super) fn spawn(max_in_flight: u16) -> Option<(Self, JoinHandle<()>)> {
-        if !scheduled_lookahead_enabled() {
+        if !gpu::lookahead_enabled() {
             return None;
         }
         let limit = usize::from(max_in_flight).min(MAX_LOOKAHEAD);
         let (requests, receiver) = bounded(limit);
         match thread::Builder::new()
-            .name("CUDA-Lookahead".to_string())
+            .name("GPU-Lookahead".to_string())
             .spawn(move || prepare_grids(receiver))
         {
             Ok(thread) => Some((
@@ -81,7 +78,7 @@ impl Lookahead {
                 thread,
             )),
             Err(error) => {
-                tracing::warn!(%error, "CUDA worldgen lookahead thread unavailable");
+                tracing::warn!(%error, "GPU worldgen lookahead thread unavailable");
                 None
             }
         }
@@ -125,7 +122,7 @@ fn prepare_grids(requests: Receiver<Request>) {
             continue;
         }
         if let WorldGenerator::Noise(generator) = request.world.as_ref()
-            && let Some(grid) = grid::prepare_chunk(
+            && let Some(grid) = gpu::prepare_chunk(
                 generator,
                 request.pos.x,
                 request.pos.y,

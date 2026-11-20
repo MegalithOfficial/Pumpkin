@@ -1,4 +1,4 @@
-#[cfg(feature = "cuda-worldgen")]
+#[cfg(feature = "gpu-worldgen")]
 use pumpkin_util::noise::perlin::{Layer, PerlinNoise};
 
 use pumpkin_data::chunk::DoublePerlinNoiseParameters;
@@ -15,7 +15,7 @@ pub struct DoublePerlinNoiseSampler {
 }
 
 impl DoublePerlinNoiseSampler {
-    #[cfg(feature = "cuda-worldgen")]
+    #[cfg(feature = "gpu-worldgen")]
     #[must_use]
     pub fn layers(&self) -> &[Layer<PerlinNoise>] {
         self.noise.layers()

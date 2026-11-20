@@ -6,7 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 
 [features]
-cuda-worldgen = ["dep:cudarc"]
+gpu-worldgen = []
+cuda-worldgen = ["gpu-worldgen", "dep:cudarc"]
 cuda-worldgen-all = ["cuda-worldgen"]
 
 [dependencies]

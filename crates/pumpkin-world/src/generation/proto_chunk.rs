@@ -854,8 +854,8 @@ impl ProtoChunk {
         solid_fast_path: bool,
     ) {
         debug_assert_eq!(self.stage, StagedChunkEnum::StructureReferences);
-        #[cfg(feature = "cuda-worldgen")]
-        let _grid = super::noise::gpu::cuda::grid::prefetch_chunk(generator, self.x, self.z);
+        #[cfg(feature = "gpu-worldgen")]
+        let _grid = super::noise::gpu::prefetch_chunk(generator, self.x, self.z);
         let settings = generator.settings;
         let generation_shape = &settings.shape;
 

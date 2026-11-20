@@ -523,7 +523,8 @@ pub(crate) fn prepare_chunk(
     let target = generator.noise_density_volume(chunk_x, chunk_z);
     let cached_plan = if engine.cache_early_plan {
         generator
-            .cuda_plan
+            .gpu_plan
+            .cuda
             .get_or_init(|| prepare_cached_plan(engine, generator))
             .as_ref()
     } else {

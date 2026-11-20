@@ -136,8 +136,8 @@ impl ChunkNoiseFunctionComponent<'_> {
         buffer: &mut [f32],
         volume: &DensityVolume,
     ) {
-        #[cfg(feature = "cuda-worldgen")]
-        if crate::generation::noise::gpu::cuda::try_volume(component_stack, buffer, volume) {
+        #[cfg(feature = "gpu-worldgen")]
+        if crate::generation::noise::gpu::try_volume(component_stack, buffer, volume) {
             return;
         }
         if let Some((top_component, component_stack)) = component_stack.split_last_mut() {
@@ -184,7 +184,7 @@ macro_rules! sample_function {
 }
 
 pub struct ChunkNoiseRouter<'a> {
-    #[cfg(feature = "cuda-worldgen")]
+    #[cfg(feature = "gpu-worldgen")]
     source: &'a ProtoNoiseRouter,
     barrier_noise: usize,
     fluid_level_floodedness_noise: usize,
@@ -220,19 +220,14 @@ impl ChunkNoiseRouter<'_> {
     #[inline]
     pub fn final_density_volume(&mut self, buffer: &mut [f32], volume: &DensityVolume) {
         let stack = &mut self.component_stack[..=self.final_density];
-        #[cfg(feature = "cuda-worldgen")]
-        if crate::generation::noise::gpu::cuda::grid::try_sample_density(
-            stack,
-            buffer,
-            volume,
-            self.source,
-        ) {
+        #[cfg(feature = "gpu-worldgen")]
+        if crate::generation::noise::gpu::try_sample_density(stack, buffer, volume, self.source) {
             return;
         }
         ChunkNoiseFunctionComponent::sample_volume_from_stack(stack, buffer, volume);
     }
 
-    #[cfg(feature = "cuda-worldgen")]
+    #[cfg(feature = "gpu-worldgen")]
     pub(crate) fn final_density_stack(&self) -> &[ChunkNoiseFunctionComponent<'_>] {
         &self.component_stack[..=self.final_density]
     }
@@ -332,7 +327,7 @@ impl<'a> ChunkVeinRouter<'a> {
 }
 
 impl<'a> ChunkNoiseRouter<'a> {
-    #[cfg(feature = "cuda-worldgen")]
+    #[cfg(feature = "gpu-worldgen")]
     pub(crate) fn generate_for_prefetch(base: &'a ProtoNoiseRouter) -> Self {
         Self::generate_slice(base, base.final_density, None)
     }
@@ -396,7 +391,7 @@ impl<'a> ChunkNoiseRouter<'a> {
         build_options: Option<&ChunkNoiseFunctionBuilderOptions>,
     ) -> Self {
         Self {
-            #[cfg(feature = "cuda-worldgen")]
+            #[cfg(feature = "gpu-worldgen")]
             source: base,
             barrier_noise: base.barrier_noise,
             fluid_level_floodedness_noise: base.fluid_level_floodedness_noise,

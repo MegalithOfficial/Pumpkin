@@ -22,11 +22,11 @@ pub mod chunk_holder;
 pub mod chunk_listener;
 pub mod chunk_loading;
 pub mod chunk_state;
-#[cfg(feature = "cuda-worldgen")]
-mod cuda_lookahead;
 pub mod dag;
 pub mod generation;
 pub mod generation_cache;
+#[cfg(feature = "gpu-worldgen")]
+mod gpu_lookahead;
 pub mod schedule;
 pub mod worker_logic;
 

@@ -130,7 +130,7 @@ pub struct Interpolated {
 }
 
 impl Interpolated {
-    #[cfg(feature = "cuda-worldgen")]
+    #[cfg(feature = "gpu-worldgen")]
     pub(crate) fn supports_chunk_translation(&self) -> bool {
         self.cell_size_xz > 0
             && i32::from(crate::generation::noise::CHUNK_DIM).rem_euclid(self.cell_size_xz) == 0
@@ -195,7 +195,7 @@ impl Interpolated {
         (corners, [cell_count_x, cell_count_y, cell_count_z])
     }
 
-    #[cfg(feature = "cuda-worldgen")]
+    #[cfg(feature = "gpu-worldgen")]
     pub(crate) fn input_volume(&self, volume: &DensityVolume) -> Option<DensityVolume> {
         if self.is_cell_aligned(volume) {
             Some(*volume)

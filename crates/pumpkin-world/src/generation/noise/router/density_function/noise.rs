@@ -25,8 +25,8 @@ const BLENDED_MAIN_FIRST_OCTAVE: i32 = -7;
 const SMEARED_RANGE_BASE: f64 = 2.0;
 
 pub struct Noise {
-    #[cfg(feature = "cuda-worldgen")]
-    pub(crate) resident: crate::generation::noise::gpu::cuda::ResidentLayers,
+    #[cfg(feature = "gpu-worldgen")]
+    pub(crate) resident: crate::generation::noise::gpu::ResidentLayers,
     pub(crate) sampler: DoublePerlinNoiseSampler,
     pub(crate) data: &'static NoiseData,
 }
@@ -36,8 +36,8 @@ impl Noise {
         Self {
             sampler,
             data,
-            #[cfg(feature = "cuda-worldgen")]
-            resident: std::sync::OnceLock::new(),
+            #[cfg(feature = "gpu-worldgen")]
+            resident: crate::generation::noise::gpu::ResidentLayers::new(),
         }
     }
 }
@@ -361,8 +361,8 @@ fn fbm_range_max(first_octave: i32, smear_scale_y: f64, value_factor: f64) -> f3
 }
 
 pub struct InterpolatedNoiseSampler {
-    #[cfg(feature = "cuda-worldgen")]
-    pub(crate) resident: crate::generation::noise::gpu::cuda::BlendedResident,
+    #[cfg(feature = "gpu-worldgen")]
+    pub(crate) resident: crate::generation::noise::gpu::BlendedResident,
     min_limit_noise: NoiseStack<SmearedPerlinNoise>,
     max_limit_noise: NoiseStack<SmearedPerlinNoise>,
     main_noise: NoiseStack<SmearedPerlinNoise>,
@@ -398,8 +398,8 @@ impl InterpolatedNoiseSampler {
             BLENDED_MAIN_FACTOR,
         );
         Self {
-            #[cfg(feature = "cuda-worldgen")]
-            resident: std::sync::OnceLock::new(),
+            #[cfg(feature = "gpu-worldgen")]
+            resident: crate::generation::noise::gpu::BlendedResident::new(),
             min_limit_noise,
             max_limit_noise,
             main_noise,
@@ -415,7 +415,7 @@ impl InterpolatedNoiseSampler {
         }
     }
 
-    #[cfg(feature = "cuda-worldgen")]
+    #[cfg(feature = "gpu-worldgen")]
     pub(crate) fn volume_stacks(&self) -> [(&NoiseStack<SmearedPerlinNoise>, f64, f64); 3] {
         [
             (

@@ -147,9 +147,8 @@ impl WorldGenerator {
 pub struct VanillaGenerator {
     pub random_config: GlobalRandomConfig,
     pub base_router: ProtoNoiseRouters,
-    #[cfg(feature = "cuda-worldgen")]
-    pub(crate) cuda_plan:
-        std::sync::OnceLock<Option<Arc<crate::generation::noise::gpu::cuda::grid::Plan>>>,
+    #[cfg(feature = "gpu-worldgen")]
+    pub(crate) gpu_plan: crate::generation::noise::gpu::PlanCache,
     pub dimension: Dimension,
     pub settings: &'static NoiseSettings,
     pub surface_rule: &'static MaterialRule,
@@ -344,8 +343,8 @@ impl VanillaGenerator {
         Self {
             random_config,
             base_router,
-            #[cfg(feature = "cuda-worldgen")]
-            cuda_plan: std::sync::OnceLock::new(),
+            #[cfg(feature = "gpu-worldgen")]
+            gpu_plan: crate::generation::noise::gpu::PlanCache::new(),
             dimension,
             settings,
             surface_rule,

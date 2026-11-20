@@ -42,6 +42,7 @@ pub(super) fn resident(
 ) -> Option<Arc<BlendedLayers>> {
     sampler
         .resident
+        .cuda
         .get_or_init(|| {
             let stacks = sampler.volume_stacks();
             let main = stacks[0].0.layers.len();
