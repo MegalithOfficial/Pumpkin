@@ -31,6 +31,12 @@ use super::{
 pub mod rule;
 pub mod terrain;
 
+struct NoiseThresholdSampler {
+    id: usize,
+    sampler: DoublePerlinNoiseSampler,
+    last_column: Option<(i32, i32, f64)>,
+}
+
 pub struct MaterialRuleContext<'a> {
     pub min_y: i8,
     pub height: u16,
@@ -67,7 +73,8 @@ pub struct MaterialRuleContext<'a> {
     /// Building one is expensive and only depends on `random_deriver`, so they are
     /// reused for the lifetime of the context. Surface rules reference very few
     /// distinct noises, so a linear scan beats hashing here.
-    noise_threshold_samplers: Vec<(usize, DoublePerlinNoiseSampler)>,
+    noise_threshold_samplers: Vec<NoiseThresholdSampler>,
+    pub(crate) cache_threshold_samples: bool,
     pub vein_context: Option<&'a mut VeinContext<'a>>,
 }
 
@@ -171,6 +178,7 @@ impl<'a> MaterialRuleContext<'a> {
             sea_level,
             steep_material_condition: None,
             noise_threshold_samplers: Vec::new(),
+            cache_threshold_samples: true,
             vein_context: None,
         }
     }
@@ -480,7 +488,7 @@ pub fn test_noise_threshold(
     let cached = context
         .noise_threshold_samplers
         .iter()
-        .position(|(id, _)| *id == condition.noise.id);
+        .position(|entry| entry.id == condition.noise.id);
     let index = cached.unwrap_or_else(|| {
         let sampler = DoublePerlinNoiseBuilder::get_noise_sampler(
             context.random_deriver,
@@ -490,14 +498,28 @@ pub fn test_noise_threshold(
         );
         context
             .noise_threshold_samplers
-            .push((condition.noise.id, sampler));
+            .push(NoiseThresholdSampler {
+                id: condition.noise.id,
+                sampler,
+                last_column: None,
+            });
         context.noise_threshold_samplers.len() - 1
     });
-    let value = f64::from(context.noise_threshold_samplers[index].1.sample(
-        context.block_pos_x as f64,
-        0.0,
-        context.block_pos_z as f64,
-    ));
+    let entry = &mut context.noise_threshold_samplers[index];
+    let (x, z) = (context.block_pos_x, context.block_pos_z);
+    let value = if context.cache_threshold_samples {
+        if let Some((cached_x, cached_z, cached)) = entry.last_column
+            && (cached_x, cached_z) == (x, z)
+        {
+            cached
+        } else {
+            let sampled = f64::from(entry.sampler.sample(f64::from(x), 0.0, f64::from(z)));
+            entry.last_column = Some((x, z, sampled));
+            sampled
+        }
+    } else {
+        f64::from(entry.sampler.sample(f64::from(x), 0.0, f64::from(z)))
+    };
     value >= condition.min_threshold && value <= condition.max_threshold
 }
 

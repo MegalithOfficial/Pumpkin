@@ -7,9 +7,13 @@ pub mod dumps;
 #[cfg(test)]
 pub mod resume;
 #[cfg(test)]
+mod solid_fill;
+#[cfg(test)]
 pub mod stage_parity;
 #[cfg(test)]
 pub mod structure_starts;
+#[cfg(test)]
+mod surface_cache;
 
 #[cfg(test)]
 pub(crate) fn surface_biomes(

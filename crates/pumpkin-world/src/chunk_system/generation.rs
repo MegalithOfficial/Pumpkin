@@ -30,6 +30,13 @@ pub fn generate_single_chunk_with_radius(
     target_stage: StagedChunkEnum,
     radius: i32,
 ) -> Chunk {
+    #[cfg(feature = "cuda-worldgen")]
+    let _grid = match generator {
+        WorldGenerator::Noise(noise) if target_stage >= StagedChunkEnum::Noise => {
+            crate::generation::noise::gpu::cuda::grid::prefetch_chunk(noise, chunk_x, chunk_z)
+        }
+        _ => None,
+    };
     let mut cache = Cache::new(chunk_x - radius, chunk_z - radius, radius * 2 + 1);
 
     for dx in -radius..=radius {

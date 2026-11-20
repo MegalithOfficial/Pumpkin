@@ -1,6 +1,8 @@
 use super::channel::LevelChange;
 use super::chunk_holder::ChunkHolder;
 use super::chunk_state::{Chunk, StagedChunkEnum};
+#[cfg(feature = "cuda-worldgen")]
+use super::cuda_lookahead::Lookahead;
 use super::dag::{DAG, EdgeKey, Node, NodeKey};
 use super::generation_cache::{Cache, SurfaceBiomeNeighborhood};
 use super::worker_logic::{RecvChunk, io_read_work, io_write_work};
@@ -87,6 +89,8 @@ pub struct GenerationSchedule {
     lighting_config: LightingEngineConfig,
     last_unload: std::time::Instant,
     generation_pool: Arc<rayon::ThreadPool>,
+    #[cfg(feature = "cuda-worldgen")]
+    cuda_lookahead: Option<Lookahead>,
 }
 
 impl GenerationSchedule {
@@ -152,6 +156,11 @@ impl GenerationSchedule {
                 .expect("Failed to build Chunk Generation ThreadPool"),
         );
         let max_in_flight = (gen_threads * 2) as u16;
+        #[cfg(feature = "cuda-worldgen")]
+        let cuda_lookahead = Lookahead::spawn(max_in_flight).map(|(queue, worker)| {
+            thread_tracker.push(worker);
+            queue
+        });
 
         let level_sched = level;
         let lighting_config = level_sched.lighting_config;
@@ -182,6 +191,8 @@ impl GenerationSchedule {
                     lighting_config,
                     last_unload: std::time::Instant::now(),
                     generation_pool,
+                    #[cfg(feature = "cuda-worldgen")]
+                    cuda_lookahead,
                 };
                 scheduler.work(&level_sched);
             })
@@ -1038,6 +1049,10 @@ impl GenerationSchedule {
     }
 
     fn drop_node(&mut self, node: NodeKey) {
+        #[cfg(feature = "cuda-worldgen")]
+        if let Some(lookahead) = &mut self.cuda_lookahead {
+            drop(lookahead.take(node));
+        }
         let Some(old) = self.graph.nodes.remove(node) else {
             return;
         };
@@ -1609,10 +1624,31 @@ impl GenerationSchedule {
                         self.running_gen_count += 1;
                         let pos = node.pos;
                         let stage = node.stage;
+                        #[cfg(feature = "cuda-worldgen")]
+                        let cuda_ticket = self.cuda_lookahead.as_mut().and_then(|lookahead| {
+                            if stage == StagedChunkEnum::StructureReferences
+                                && effective_target >= StagedChunkEnum::Noise
+                                && let Some(holder) = self.chunk_map.get(&pos)
+                            {
+                                let noise = holder.tasks[StagedChunkEnum::Noise as usize];
+                                if !noise.is_null() {
+                                    lookahead.schedule(noise, pos, level.world_gen.load_full());
+                                }
+                            }
+                            if stage == StagedChunkEnum::Noise {
+                                lookahead.take(task.1)
+                            } else {
+                                None
+                            }
+                        });
                         let send_chunk = self.send_chunk.clone();
                         let level = level.clone();
 
                         self.generation_pool.spawn(move || {
+                            #[cfg(feature = "cuda-worldgen")]
+                            let _cuda_grid = cuda_ticket
+                                .as_ref()
+                                .and_then(|ticket| ticket.activate(&level));
                             let result = crate::chunk_system::worker_logic::run_generation(
                                 pos, cache, stage, &level,
                             );

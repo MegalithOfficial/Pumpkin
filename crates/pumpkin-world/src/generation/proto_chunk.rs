@@ -47,7 +47,9 @@ use crate::generation::noise::router::{
     density_volume::{DensityBuffer, DensityVolume},
     surface_height_sampler::SurfaceHeightSamplerBuilderOptions,
 };
-use crate::generation::noise::{CHUNK_DIM, ChunkNoiseGenerator, LAVA_BLOCK, WATER_BLOCK};
+use crate::generation::noise::{
+    CHUNK_DIM, ChunkDensities, ChunkNoiseGenerator, LAVA_BLOCK, WATER_BLOCK,
+};
 use crate::generation::section_coords::section_to_block;
 use crate::generation::structure::lazily_generate_structure;
 use crate::generation::structure::placement::should_generate_structure;
@@ -841,13 +843,21 @@ impl ProtoChunk {
         self.stage = StagedChunkEnum::Biomes;
     }
 
-    #[expect(clippy::too_many_lines)]
     pub fn step_to_noise(&mut self, generator: &super::generator::VanillaGenerator) {
+        self.step_to_noise_with_solid_fast_path(generator, true);
+    }
+
+    #[expect(clippy::too_many_lines)]
+    pub(crate) fn step_to_noise_with_solid_fast_path(
+        &mut self,
+        generator: &super::generator::VanillaGenerator,
+        solid_fast_path: bool,
+    ) {
         debug_assert_eq!(self.stage, StagedChunkEnum::StructureReferences);
+        #[cfg(feature = "cuda-worldgen")]
+        let _grid = super::noise::gpu::cuda::grid::prefetch_chunk(generator, self.x, self.z);
         let settings = generator.settings;
         let generation_shape = &settings.shape;
-        let start_x = start_block_x(self.x);
-        let start_z = start_block_z(self.z);
 
         let sampler = StandardChunkFluidLevelSampler::new(
             FluidLevel::new(
@@ -975,14 +985,7 @@ impl ProtoChunk {
         let mut noise_sampler = ChunkNoiseGenerator::new(
             &generator.base_router.noise,
             &generator.random_config,
-            DensityVolume::with_block_step(
-                CHUNK_DIM as usize,
-                generation_shape.height as usize,
-                CHUNK_DIM as usize,
-                start_x,
-                i32::from(generation_shape.min_y),
-                start_z,
-            ),
+            generator.noise_density_volume(self.x, self.z),
             generation_shape,
             sampler,
             settings.aquifers_enabled,
@@ -1002,11 +1005,12 @@ impl ProtoChunk {
             &surface_config,
             std::mem::take(&mut self.surface_height_cache),
         );
-        self.populate_noise(
+        self.populate_noise_with_solid_fast_path(
             generator,
             &mut noise_sampler,
             &generator.random_config.ore_random_deriver,
             &mut surface_height_estimate_sampler,
+            solid_fast_path,
         );
         self.surface_height_cache = surface_height_estimate_sampler.into_cache();
         self.aquifer_sampler = noise_sampler.into_aquifer();
@@ -1018,6 +1022,15 @@ impl ProtoChunk {
         &mut self,
         generator: &super::generator::VanillaGenerator,
         surface_biomes: &SurfaceBiomeNeighborhood,
+    ) {
+        self.step_to_surface_with_threshold_cache(generator, surface_biomes, true);
+    }
+
+    pub(crate) fn step_to_surface_with_threshold_cache(
+        &mut self,
+        generator: &super::generator::VanillaGenerator,
+        surface_biomes: &SurfaceBiomeNeighborhood,
+        cache_threshold_samples: bool,
     ) {
         debug_assert_eq!(self.stage, StagedChunkEnum::Noise);
         let generation_shape = &generator.settings.shape;
@@ -1032,10 +1045,11 @@ impl ProtoChunk {
             std::mem::take(&mut self.surface_height_cache),
         );
 
-        self.build_surface(
+        self.build_surface_with_threshold_cache(
             generator,
             surface_biomes,
             &mut surface_height_estimate_sampler,
+            cache_threshold_samples,
         );
         self.surface_height_cache = surface_height_estimate_sampler.into_cache();
         self.stage = StagedChunkEnum::Surface;
@@ -1123,9 +1137,49 @@ impl ProtoChunk {
         ore_random_deriver: &XoroshiroSplitter,
         surface_height_estimate_sampler: &mut SurfaceHeightEstimateSampler,
     ) {
-        let volume = *noise_sampler.volume();
+        self.populate_noise_with_solid_fast_path(
+            generator,
+            noise_sampler,
+            ore_random_deriver,
+            surface_height_estimate_sampler,
+            true,
+        );
+    }
+
+    fn populate_noise_with_solid_fast_path(
+        &mut self,
+        generator: &super::generator::VanillaGenerator,
+        noise_sampler: &mut ChunkNoiseGenerator,
+        ore_random_deriver: &XoroshiroSplitter,
+        surface_height_estimate_sampler: &mut SurfaceHeightEstimateSampler,
+        solid_fast_path: bool,
+    ) {
         let densities = noise_sampler.sample_density();
 
+        let fill_blocks = if solid_fast_path && noise_sampler.has_only_aquifer_sampler() {
+            Self::fill_noise_blocks::<true>
+        } else {
+            Self::fill_noise_blocks::<false>
+        };
+        fill_blocks(
+            self,
+            generator.default_block,
+            noise_sampler,
+            ore_random_deriver,
+            surface_height_estimate_sampler,
+            &densities,
+        );
+    }
+
+    fn fill_noise_blocks<const SOLID_FAST_PATH: bool>(
+        &mut self,
+        default_block: &'static BlockState,
+        noise_sampler: &mut ChunkNoiseGenerator,
+        ore_random_deriver: &XoroshiroSplitter,
+        surface_height_estimate_sampler: &mut SurfaceHeightEstimateSampler,
+        densities: &ChunkDensities,
+    ) {
+        let volume = *noise_sampler.volume();
         for z in 0..volume.size_z {
             let block_z = volume.block_z(z);
             for x in 0..volume.size_x {
@@ -1133,15 +1187,22 @@ impl ProtoChunk {
                 for y in (0..volume.size_y).rev() {
                     let block_y = volume.block_y(y);
                     let index = volume.index_unchecked(x, y, z);
-                    let block_state = noise_sampler
-                        .sample_block_state(
-                            ore_random_deriver,
-                            &Vector3::new(block_x, block_y, block_z),
-                            densities.density[index],
-                            densities.vein_sample(index).as_ref(),
-                            surface_height_estimate_sampler,
-                        )
-                        .unwrap_or(generator.default_block);
+                    let density = densities.density[index];
+                    // Both aquifer implementations return without touching their caches
+                    // for positive density. The single-sampler chain falls back to this block.
+                    let block_state = if SOLID_FAST_PATH && density > 0.0 {
+                        default_block
+                    } else {
+                        noise_sampler
+                            .sample_block_state(
+                                ore_random_deriver,
+                                &Vector3::new(block_x, block_y, block_z),
+                                density,
+                                densities.vein_sample(index).as_ref(),
+                                surface_height_estimate_sampler,
+                            )
+                            .unwrap_or(default_block)
+                    };
                     // Noise is the first stage to place blocks, so air is already there.
                     if block_state.id != BlockStateId::AIR {
                         self.set_block_state(block_x, block_y, block_z, block_state);
@@ -1223,16 +1284,31 @@ impl ProtoChunk {
         Biome::from_id(self.get_terrain_gen_biome_id(x, y, z)).unwrap_or(&Biome::PLAINS)
     }
 
-    #[expect(clippy::too_many_lines)]
-    #[expect(
-        clippy::panic,
-        reason = "surface scheduling guarantees a complete 3x3 biome neighborhood"
-    )]
     pub(crate) fn build_surface(
         &mut self,
         generator: &super::generator::VanillaGenerator,
         surface_biomes: &SurfaceBiomeNeighborhood,
         surface_height_estimate_sampler: &mut SurfaceHeightEstimateSampler,
+    ) {
+        self.build_surface_with_threshold_cache(
+            generator,
+            surface_biomes,
+            surface_height_estimate_sampler,
+            true,
+        );
+    }
+
+    #[expect(clippy::too_many_lines)]
+    #[expect(
+        clippy::panic,
+        reason = "surface scheduling guarantees a complete 3x3 biome neighborhood"
+    )]
+    fn build_surface_with_threshold_cache(
+        &mut self,
+        generator: &super::generator::VanillaGenerator,
+        surface_biomes: &SurfaceBiomeNeighborhood,
+        surface_height_estimate_sampler: &mut SurfaceHeightEstimateSampler,
+        cache_threshold_samples: bool,
     ) {
         let start_x = chunk_pos::start_block_x(self.x);
         let start_z = chunk_pos::start_block_z(self.z);
@@ -1255,6 +1331,7 @@ impl ProtoChunk {
             settings.sea_level,
         );
         context.surface_biomes = Some(surface_biomes);
+        context.cache_threshold_samples = cache_threshold_samples;
         let mut vein_context = settings.ore_veins_enabled.then(|| {
             let chunk_min_y = i32::from(min_y);
             let chunk_max_y = chunk_min_y + i32::from(self.height());
