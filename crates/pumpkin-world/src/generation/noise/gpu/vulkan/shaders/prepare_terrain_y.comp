@@ -1,0 +1,45 @@
+#version 450
+#extension GL_ARB_gpu_shader_fp64 : require
+
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+#include "density.glsl"
+
+layout(std430, set = 0, binding = 0) readonly buffer LayersBuf {
+    Layer layers[];
+};
+
+layout(std430, set = 0, binding = 1) readonly buffer SmearBuf {
+    double smears[];
+};
+
+layout(std430, set = 0, binding = 2) readonly buffer PrepareParamsBuf {
+    uint layer_offset;
+    uint smear_offset;
+    int size_y;
+    int step_y;
+    uint row_entries;
+    int bases[8];
+} params;
+
+layout(std430, set = 0, binding = 3) writeonly buffer SmearTableBuf {
+    SmearY table[];
+};
+
+void main() {
+    uint entry = gl_GlobalInvocationID.x;
+    if (entry >= params.row_entries) {
+        return;
+    }
+    uint row = gl_WorkGroupID.y;
+    uint octave = entry / uint(params.size_y);
+    int iy = int(entry % uint(params.size_y));
+    int y = params.bases[row] + iy * params.step_y;
+    uint layer_idx = params.layer_offset + octave;
+    table[row * params.row_entries + entry] = compute_smear_y(
+        layers[layer_idx].offset_y,
+        layers[layer_idx].y_scale,
+        smears[params.smear_offset + octave],
+        y
+    );
+}

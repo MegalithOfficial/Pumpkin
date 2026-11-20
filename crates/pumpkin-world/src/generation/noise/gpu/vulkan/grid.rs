@@ -31,11 +31,14 @@ use std::{
     rc::Rc,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
+static NEXT_PLAN_ID: AtomicU64 = AtomicU64::new(1);
+
 pub struct Plan {
+    pub(super) id: u64,
     pub(super) volume: DensityVolume,
     pub(super) indices: Vec<(usize, Option<usize>)>,
     pub(super) plane_count: usize,
@@ -571,6 +574,7 @@ fn build_plan(
     params.step_z = volume.step_block_z;
 
     Some(Arc::new(Plan {
+        id: NEXT_PLAN_ID.fetch_add(1, Ordering::Relaxed),
         volume,
         indices,
         plane_count: total_planes,

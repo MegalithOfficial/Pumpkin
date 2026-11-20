@@ -1,6 +1,6 @@
 //! Safe `vulkano` compute device, buffer, and worker lane abstraction.
 
-use super::abi::BatchParams;
+use super::abi::{BatchParams, MAX_GRID_CHUNKS, PrepareParams, SmearY};
 use std::sync::Arc;
 use vulkano::{
     VulkanLibrary,
@@ -38,6 +38,8 @@ use vulkano::{
 
 const BYTES_PER_GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 const WORKGROUP_SIZE: usize = 64;
+const PREPARE_WORKGROUP_SIZE: u32 = 128;
+const MAX_SMEAR_ENTRIES: usize = 1 << 20;
 const MAX_LANES: usize = 8;
 
 pub(super) type StorageBuffer<T> = Subbuffer<[T]>;
@@ -56,6 +58,7 @@ pub(super) struct VulkanDevice {
     command_allocator: Arc<dyn CommandBufferAllocator>,
     descriptor_allocator: Arc<dyn DescriptorSetAllocator>,
     pipeline: Arc<ComputePipeline>,
+    prepare_pipeline: Arc<ComputePipeline>,
     pub info: DeviceInfo,
 }
 
@@ -172,7 +175,14 @@ impl VulkanDevice {
                 Arc::clone(&device),
                 StandardDescriptorSetAllocatorCreateInfo::default(),
             ));
-        let pipeline = create_compute_pipeline(&device)?;
+        let pipeline = create_compute_pipeline(
+            &device,
+            include_bytes!(concat!(env!("OUT_DIR"), "/worldgen.spv")),
+        )?;
+        let prepare_pipeline = create_compute_pipeline(
+            &device,
+            include_bytes!(concat!(env!("OUT_DIR"), "/prepare_terrain_y.spv")),
+        )?;
 
         Ok((
             Arc::new(Self {
@@ -183,6 +193,7 @@ impl VulkanDevice {
                 command_allocator,
                 descriptor_allocator,
                 pipeline,
+                prepare_pipeline,
                 info: DeviceInfo {
                     name,
                     api_version,
@@ -266,14 +277,35 @@ impl VulkanDevice {
     }
 }
 
-/// Per-worker-thread Vulkan compute execution lane with reusable buffers.
+struct SmearKey {
+    plan_id: u64,
+    size_y: i32,
+    step_y: i32,
+    bases: Vec<i32>,
+}
+
+struct CachedDescriptor {
+    plan_id: u64,
+    output_capacity: usize,
+    smear_generation: u64,
+    set: Arc<DescriptorSet>,
+}
+
+/// Per-worker-thread Vulkan compute execution lane with reusable buffers, smear-Y table cache,
+/// and cached descriptor sets.
 pub(super) struct ComputeLane {
     device: Arc<VulkanDevice>,
     queue: Arc<Queue>,
     params_buffer: Subbuffer<BatchParams>,
+    prepare_params_buffer: Subbuffer<PrepareParams>,
+    smear_table: Subbuffer<[SmearY]>,
+    smear_capacity: usize,
+    smear_generation: u64,
+    smear_key: Option<SmearKey>,
     output_device: Option<Subbuffer<[f32]>>,
     output_host: Option<Subbuffer<[f32]>>,
     output_capacity: usize,
+    cached_descriptor: Option<CachedDescriptor>,
 }
 
 impl ComputeLane {
@@ -294,13 +326,48 @@ impl ComputeLane {
         )
         .map_err(|e| format!("failed to allocate Vulkan batch params buffer: {e}"))?;
 
+        let prepare_params_buffer = Buffer::from_data(
+            Arc::clone(&device.memory_allocator),
+            BufferCreateInfo {
+                usage: BufferUsage::STORAGE_BUFFER,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            PrepareParams::default(),
+        )
+        .map_err(|e| format!("failed to allocate Vulkan prepare params buffer: {e}"))?;
+
+        let smear_table = Buffer::new_slice::<SmearY>(
+            Arc::clone(&device.memory_allocator),
+            BufferCreateInfo {
+                usage: BufferUsage::STORAGE_BUFFER,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
+                ..Default::default()
+            },
+            16,
+        )
+        .map_err(|e| format!("failed to allocate initial Vulkan smear table: {e}"))?;
+
         Ok(Self {
             device,
             queue,
             params_buffer,
+            prepare_params_buffer,
+            smear_table,
+            smear_capacity: 16,
+            smear_generation: 0,
+            smear_key: None,
             output_device: None,
             output_host: None,
             output_capacity: 0,
+            cached_descriptor: None,
         })
     }
 
@@ -339,22 +406,132 @@ impl ComputeLane {
             self.output_device = Some(dev);
             self.output_host = Some(host);
             self.output_capacity = capacity;
+            self.cached_descriptor = None;
         }
         Ok(())
     }
 
-    #[expect(clippy::too_many_arguments)]
+    fn plan_smear_table(
+        &mut self,
+        plan_id: u64,
+        params: &mut BatchParams,
+        batch_len: usize,
+    ) -> Result<Option<(PrepareParams, u32, u32)>, String> {
+        let total = params.blended.total_count as usize;
+        if total == 0 || params.size_y <= 0 {
+            params.use_smear_table = 0;
+            return Ok(None);
+        }
+        let size_y = params.size_y as usize;
+        let row_entries = total.saturating_mul(size_y);
+        if row_entries == 0 || row_entries > MAX_SMEAR_ENTRIES {
+            params.use_smear_table = 0;
+            return Ok(None);
+        }
+
+        if let Some(key) = &self.smear_key
+            && key.plan_id == plan_id
+            && key.size_y == params.size_y
+            && key.step_y == params.step_y
+        {
+            let mut rows = [0u32; MAX_GRID_CHUNKS];
+            let mut all_found = true;
+            for (index, row_slot) in rows.iter_mut().enumerate().take(batch_len) {
+                let base_y = params.origins[3 * index + 1];
+                if let Some(found) = key.bases.iter().position(|&b| b == base_y) {
+                    *row_slot = found as u32;
+                } else {
+                    all_found = false;
+                    break;
+                }
+            }
+            if all_found {
+                params.table_rows = rows;
+                params.use_smear_table = 1;
+                return Ok(None);
+            }
+        }
+
+        let mut bases = Vec::with_capacity(batch_len);
+        let mut rows = [0u32; MAX_GRID_CHUNKS];
+        for (index, row_slot) in rows.iter_mut().enumerate().take(batch_len) {
+            let base_y = params.origins[3 * index + 1];
+            let row = bases.iter().position(|&b| b == base_y).unwrap_or_else(|| {
+                bases.push(base_y);
+                bases.len() - 1
+            });
+            *row_slot = row as u32;
+        }
+        let needed = row_entries.saturating_mul(bases.len());
+        if needed > MAX_SMEAR_ENTRIES {
+            params.use_smear_table = 0;
+            return Ok(None);
+        }
+
+        if self.smear_capacity < needed {
+            let capacity = needed.next_power_of_two().max(16);
+            self.smear_table = Buffer::new_slice::<SmearY>(
+                Arc::clone(&self.device.memory_allocator),
+                BufferCreateInfo {
+                    usage: BufferUsage::STORAGE_BUFFER,
+                    ..Default::default()
+                },
+                AllocationCreateInfo {
+                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE,
+                    ..Default::default()
+                },
+                capacity as u64,
+            )
+            .map_err(|e| format!("failed to allocate Vulkan smear table: {e}"))?;
+            self.smear_capacity = capacity;
+            self.smear_generation += 1;
+            self.cached_descriptor = None;
+        }
+
+        let mut base_array = [0i32; MAX_GRID_CHUNKS];
+        for (dst, &src) in base_array.iter_mut().zip(&bases) {
+            *dst = src;
+        }
+        let prep = PrepareParams {
+            layer_offset: params.blended.layer_offset,
+            smear_offset: params.blended.smear_offset,
+            size_y: params.size_y,
+            step_y: params.step_y,
+            row_entries: row_entries as u32,
+            bases: base_array,
+        };
+        let row_count = bases.len() as u32;
+        self.smear_key = Some(SmearKey {
+            plan_id,
+            size_y: params.size_y,
+            step_y: params.step_y,
+            bases,
+        });
+        params.table_rows = rows;
+        params.use_smear_table = 1;
+        Ok(Some((
+            prep,
+            (row_entries as u32).div_ceil(PREPARE_WORKGROUP_SIZE),
+            row_count,
+        )))
+    }
+
+    #[expect(clippy::too_many_arguments, clippy::too_many_lines)]
     pub(super) fn execute<L: BufferContents>(
         &mut self,
+        plan_id: u64,
         layers: &StorageBuffer<L>,
         smears: &StorageBuffer<f64>,
-        params: &BatchParams,
+        params: &mut BatchParams,
+        batch_len: usize,
         grid_x: u32,
         grid_y: u32,
         grid_z: u32,
         output_len: usize,
     ) -> Result<Vec<f32>, String> {
         self.reserve_output(output_len)?;
+        let prepare_job = self.plan_smear_table(plan_id, params, batch_len)?;
+
         {
             let mut guard = self
                 .params_buffer
@@ -363,6 +540,14 @@ impl ComputeLane {
             *guard = *params;
         };
 
+        if let Some((prep_params, _, _)) = prepare_job {
+            let mut guard = self
+                .prepare_params_buffer
+                .write()
+                .map_err(|e| format!("failed to map Vulkan prepare params buffer: {e}"))?;
+            *guard = prep_params;
+        }
+
         let Some(output_device) = self.output_device.as_ref() else {
             return Ok(Vec::new());
         };
@@ -370,26 +555,44 @@ impl ComputeLane {
             return Ok(Vec::new());
         };
 
-        let layout = self
-            .device
-            .pipeline
-            .layout()
-            .set_layouts()
-            .first()
-            .ok_or_else(|| String::from("Vulkan pipeline missing descriptor set layout"))?;
-
-        let descriptor_set = DescriptorSet::new(
-            Arc::clone(&self.device.descriptor_allocator),
-            Arc::clone(layout),
-            [
-                WriteDescriptorSet::buffer(0, layers.clone()),
-                WriteDescriptorSet::buffer(1, smears.clone()),
-                WriteDescriptorSet::buffer(2, self.params_buffer.clone()),
-                WriteDescriptorSet::buffer(3, output_device.clone()),
-            ],
-            [],
-        )
-        .map_err(|e| format!("failed to create Vulkan descriptor set: {e}"))?;
+        let descriptor_set = match &self.cached_descriptor {
+            Some(cached)
+                if cached.plan_id == plan_id
+                    && cached.output_capacity == self.output_capacity
+                    && cached.smear_generation == self.smear_generation =>
+            {
+                Arc::clone(&cached.set)
+            }
+            _ => {
+                let layout = self
+                    .device
+                    .pipeline
+                    .layout()
+                    .set_layouts()
+                    .first()
+                    .ok_or_else(|| String::from("Vulkan pipeline missing descriptor set layout"))?;
+                let set = DescriptorSet::new(
+                    Arc::clone(&self.device.descriptor_allocator),
+                    Arc::clone(layout),
+                    [
+                        WriteDescriptorSet::buffer(0, layers.clone()),
+                        WriteDescriptorSet::buffer(1, smears.clone()),
+                        WriteDescriptorSet::buffer(2, self.params_buffer.clone()),
+                        WriteDescriptorSet::buffer(3, output_device.clone()),
+                        WriteDescriptorSet::buffer(4, self.smear_table.clone()),
+                    ],
+                    [],
+                )
+                .map_err(|e| format!("failed to create Vulkan descriptor set: {e}"))?;
+                self.cached_descriptor = Some(CachedDescriptor {
+                    plan_id,
+                    output_capacity: self.output_capacity,
+                    smear_generation: self.smear_generation,
+                    set: Arc::clone(&set),
+                });
+                set
+            }
+        };
 
         let mut builder = AutoCommandBufferBuilder::primary(
             Arc::clone(&self.device.command_allocator),
@@ -397,6 +600,49 @@ impl ComputeLane {
             CommandBufferUsage::OneTimeSubmit,
         )
         .map_err(|e| format!("failed to begin Vulkan compute command buffer: {e}"))?;
+
+        if let Some((_, prep_groups_x, prep_groups_y)) = prepare_job {
+            let prep_layout = self
+                .device
+                .prepare_pipeline
+                .layout()
+                .set_layouts()
+                .first()
+                .ok_or_else(|| {
+                    String::from("Vulkan prepare pipeline missing descriptor set layout")
+                })?;
+            let prep_set = DescriptorSet::new(
+                Arc::clone(&self.device.descriptor_allocator),
+                Arc::clone(prep_layout),
+                [
+                    WriteDescriptorSet::buffer(0, layers.clone()),
+                    WriteDescriptorSet::buffer(1, smears.clone()),
+                    WriteDescriptorSet::buffer(2, self.prepare_params_buffer.clone()),
+                    WriteDescriptorSet::buffer(3, self.smear_table.clone()),
+                ],
+                [],
+            )
+            .map_err(|e| format!("failed to create Vulkan prepare descriptor set: {e}"))?;
+
+            builder
+                .bind_pipeline_compute(Arc::clone(&self.device.prepare_pipeline))
+                .map_err(|e| format!("failed to bind Vulkan prepare pipeline: {e}"))?
+                .bind_descriptor_sets(
+                    PipelineBindPoint::Compute,
+                    Arc::clone(self.device.prepare_pipeline.layout()),
+                    0,
+                    prep_set,
+                )
+                .map_err(|e| format!("failed to bind Vulkan prepare descriptor set: {e}"))?;
+
+            // SAFETY: `prepare_terrain_y.comp` writes `smear_table[..row_entries * row_count]`
+            // within the allocated `smear_table` buffer.
+            unsafe {
+                builder
+                    .dispatch([prep_groups_x, prep_groups_y, 1])
+                    .map_err(|e| format!("failed to record Vulkan prepare dispatch: {e}"))?;
+            };
+        }
 
         builder
             .bind_pipeline_compute(Arc::clone(&self.device.pipeline))
@@ -409,8 +655,8 @@ impl ComputeLane {
             )
             .map_err(|e| format!("failed to bind Vulkan descriptor set: {e}"))?;
 
-        // SAFETY: `worldgen.comp` reads within `layers`, `smears`, and `params`, and writes
-        // within `output_device[..output_len]` for `[grid_x, grid_y, grid_z]`.
+        // SAFETY: `worldgen.comp` reads within `layers`, `smears`, `params`, and `smear_table`,
+        // and writes within `output_device[..output_len]` for `[grid_x, grid_y, grid_z]`.
         unsafe {
             builder
                 .dispatch([grid_x, grid_y, grid_z])
@@ -444,17 +690,19 @@ impl ComputeLane {
     }
 }
 
-fn create_compute_pipeline(device: &Arc<Device>) -> Result<Arc<ComputePipeline>, String> {
-    let spv_bytes: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/worldgen.spv"));
+fn create_compute_pipeline(
+    device: &Arc<Device>,
+    spv_bytes: &[u8],
+) -> Result<Arc<ComputePipeline>, String> {
     if !spv_bytes.len().is_multiple_of(4) {
         return Err(String::from(
-            "embedded worldgen.spv size is not 4-byte aligned",
+            "embedded Vulkan SPIR-V size is not 4-byte aligned",
         ));
     }
     let (chunks, _) = spv_bytes.as_chunks::<4>();
     let words: Vec<u32> = chunks.iter().copied().map(u32::from_le_bytes).collect();
 
-    // SAFETY: `worldgen.spv` is compiled at build time from `worldgen.comp` by glslc/glslangValidator.
+    // SAFETY: SPIR-V bytes are compiled at build time from GLSL compute shaders.
     let shader =
         unsafe { ShaderModule::new(Arc::clone(device), ShaderModuleCreateInfo::new(&words)) }
             .map_err(|e| format!("failed to load Vulkan shader module: {e}"))?;

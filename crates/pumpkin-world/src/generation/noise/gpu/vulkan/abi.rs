@@ -87,6 +87,29 @@ pub(super) struct SelectorDesc {
 
 const _: () = assert!(std::mem::size_of::<SelectorDesc>() == 40);
 
+#[derive(BufferContents, Copy, Clone, Default)]
+#[repr(C)]
+pub(super) struct SmearY {
+    pub floor_y: i32,
+    pub fudged_y: f32,
+    pub alpha: f32,
+}
+
+const _: () = assert!(std::mem::size_of::<SmearY>() == 12);
+
+#[derive(BufferContents, Copy, Clone, Default)]
+#[repr(C)]
+pub(super) struct PrepareParams {
+    pub layer_offset: u32,
+    pub smear_offset: u32,
+    pub size_y: i32,
+    pub step_y: i32,
+    pub row_entries: u32,
+    pub bases: [i32; MAX_GRID_CHUNKS],
+}
+
+const _: () = assert!(std::mem::size_of::<PrepareParams>() == 52);
+
 #[derive(BufferContents, Copy, Clone)]
 #[repr(C)]
 pub(super) struct BatchParams {
@@ -97,8 +120,9 @@ pub(super) struct BatchParams {
     pub step_x: i32,
     pub step_y: i32,
     pub step_z: i32,
-    pub _pad0: u32,
+    pub use_smear_table: u32,
     pub origins: [i32; MAX_GRID_CHUNKS * 3],
+    pub table_rows: [u32; MAX_GRID_CHUNKS],
     pub planes: [PlaneDesc; MAX_PLANES],
     pub blended: BlendedDesc,
     pub companions: [PlaneDesc; MAX_BINARY_PAIRS],
@@ -118,8 +142,9 @@ impl Default for BatchParams {
             step_x: 0,
             step_y: 0,
             step_z: 0,
-            _pad0: 0,
+            use_smear_table: 0,
             origins: [0; MAX_GRID_CHUNKS * 3],
+            table_rows: [0; MAX_GRID_CHUNKS],
             planes: [PlaneDesc::default(); MAX_PLANES],
             blended: BlendedDesc::default(),
             companions: [PlaneDesc::default(); MAX_BINARY_PAIRS],

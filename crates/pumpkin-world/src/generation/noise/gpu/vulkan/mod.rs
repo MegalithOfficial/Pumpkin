@@ -118,9 +118,11 @@ fn dispatch_grid(lane: &mut ComputeLane, batch: &[grid::Job]) -> Result<(), Stri
     }
 
     let raw = lane.execute(
+        first.plan.id,
         &first.plan.layers,
         &first.plan.smears,
-        &params,
+        &mut params,
+        batch.len(),
         v.size_x as u32,
         v.size_z as u32,
         total_planes as u32,

@@ -36,9 +36,11 @@ enum ArchPlan {
 
 fn main() -> io::Result<()> {
     let cuda_dir = "src/generation/noise/gpu/cuda/kernels";
-    let vulkan_dir = "src/generation/noise/gpu/vulkan";
+    let vulkan_dir = "src/generation/noise/gpu/vulkan/shaders";
     println!("cargo:rerun-if-changed={cuda_dir}/density.cuh");
     println!("cargo:rerun-if-changed={cuda_dir}/worldgen.cu");
+    println!("cargo:rerun-if-changed={vulkan_dir}/density.glsl");
+    println!("cargo:rerun-if-changed={vulkan_dir}/prepare_terrain_y.comp");
     println!("cargo:rerun-if-changed={vulkan_dir}/worldgen.comp");
     println!("cargo:rerun-if-changed=../pumpkin-util/src/noise/perlin_gradients.in");
 
@@ -140,35 +142,42 @@ fn compile_vulkan(out_dir: &PathBuf, dir: &str) -> io::Result<()> {
     }
     writeln!(header, ");")?;
 
-    let shader = format!("{dir}/worldgen.comp");
-    let output = out_dir.join("worldgen.spv");
+    for (src, dst) in [
+        ("worldgen.comp", "worldgen.spv"),
+        ("prepare_terrain_y.comp", "prepare_terrain_y.spv"),
+    ] {
+        compile_glsl(out_dir, &format!("{dir}/{src}"), &out_dir.join(dst))?;
+    }
+    Ok(())
+}
 
+fn compile_glsl(out_dir: &PathBuf, shader: &str, output: &PathBuf) -> io::Result<()> {
     let glslc = env::var_os("GLSLC").unwrap_or_else(|| OsString::from("glslc"));
     let status = Command::new(&glslc)
         .args(["--target-env=vulkan1.2", "-O", "-I"])
         .arg(out_dir)
-        .arg(&shader)
+        .arg(shader)
         .arg("-o")
-        .arg(&output)
+        .arg(output)
         .status();
 
     match status {
         Ok(status) if status.success() => Ok(()),
-        Ok(_) => Err(io::Error::other("glslc failed to build worldgen.spv")),
+        Ok(_) => Err(io::Error::other(format!("glslc failed to build {shader}"))),
         Err(error) if error.kind() == io::ErrorKind::NotFound && env::var_os("GLSLC").is_none() => {
             let fallback = Command::new("glslangValidator")
                 .args(["-V", "--target-env", "vulkan1.2", "-I"])
                 .arg(out_dir)
-                .arg(&shader)
+                .arg(shader)
                 .arg("-o")
-                .arg(&output)
+                .arg(output)
                 .status()?;
             if fallback.success() {
                 Ok(())
             } else {
-                Err(io::Error::other(
-                    "glslangValidator failed to build worldgen.spv",
-                ))
+                Err(io::Error::other(format!(
+                    "glslangValidator failed to build {shader}"
+                )))
             }
         }
         Err(error) => Err(error),
