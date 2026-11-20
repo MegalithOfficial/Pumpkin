@@ -10,7 +10,10 @@ mod worker;
 
 use crossbeam::channel::{Sender, bounded};
 use cudarc::{
-    driver::{CudaContext, CudaSlice, DeviceRepr, sys::CUresult},
+    driver::{
+        CudaContext, CudaSlice, DeviceRepr,
+        sys::{CUdevice_attribute, CUresult},
+    },
     nvrtc::Ptx,
 };
 use pumpkin_config::world::{WorldgenBackend, WorldgenConfig};
@@ -32,7 +35,11 @@ use super::super::router::{
 use abi::CudaLayer;
 
 pub(crate) type ResidentLayers = OnceLock<Option<Arc<CudaSlice<CudaLayer>>>>;
-const LANES: usize = 2;
+const DEFAULT_LANES: usize = 2;
+const MAX_AUTO_LANES: usize = 4;
+const MAX_LANES: usize = 8;
+// Typical 3-chunk Overworld grid launch (~3 * 25 columns * ~10 planes).
+const TYPICAL_BATCH_BLOCKS: usize = 768;
 const MAX_BATCH: usize = 64;
 const MAX_SAMPLES: usize = 1 << 20;
 const BYTES_PER_GIB: f64 = 1024.0 * 1024.0 * 1024.0;
@@ -254,7 +261,71 @@ impl Drop for CpuReferenceGuard {
     }
 }
 
-fn start(device: usize) -> Result<Engine, Box<dyn std::error::Error>> {
+#[derive(Clone, Copy)]
+struct DeviceCapabilities {
+    sm_count: Option<usize>,
+    max_blocks_per_sm: Option<usize>,
+    async_engines: Option<usize>,
+    concurrent_kernels: Option<bool>,
+    host_cpus: usize,
+}
+
+impl DeviceCapabilities {
+    fn query(context: &CudaContext) -> Self {
+        let attr = |key| {
+            context
+                .attribute(key)
+                .ok()
+                .and_then(|value| usize::try_from(value).ok())
+        };
+        Self {
+            sm_count: attr(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT)
+                .filter(|&n| n > 0),
+            max_blocks_per_sm: attr(
+                CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCKS_PER_MULTIPROCESSOR,
+            )
+            .filter(|&n| n > 0),
+            async_engines: attr(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_ASYNC_ENGINE_COUNT),
+            concurrent_kernels: attr(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_CONCURRENT_KERNELS)
+                .map(|v| v != 0),
+            host_cpus: std::thread::available_parallelism()
+                .map(std::num::NonZeroUsize::get)
+                .unwrap_or(DEFAULT_LANES * 2),
+        }
+    }
+
+    fn auto_streams(self) -> usize {
+        let async_engines = self.async_engines.unwrap_or(1);
+        let concurrent_kernels = self.concurrent_kernels.unwrap_or(true);
+        if async_engines == 0 && !concurrent_kernels {
+            return 1;
+        }
+        // One lane overlaps D2H readback and host dispatch while compute lanes run kernels.
+        let desired = if concurrent_kernels && async_engines >= 2 {
+            let compute_lanes = match (self.sm_count, self.max_blocks_per_sm) {
+                (Some(sms), Some(blocks_per_sm)) => (sms.saturating_mul(blocks_per_sm)
+                    / TYPICAL_BATCH_BLOCKS)
+                    .clamp(1, MAX_AUTO_LANES - 1),
+                _ => 1,
+            };
+            (compute_lanes + 1).min(MAX_AUTO_LANES)
+        } else {
+            DEFAULT_LANES
+        };
+        // Keep worker threads from starving the Rayon generation pool on small hosts.
+        let host_cap = (self.host_cpus / 2).max(1);
+        desired.min(host_cap)
+    }
+}
+
+fn resolve_streams(caps: DeviceCapabilities, configured: usize) -> (usize, &'static str) {
+    if configured > 0 {
+        return (configured.min(MAX_LANES), "config");
+    }
+    (caps.auto_streams(), "auto")
+}
+
+fn start(device: usize, configured_streams: usize) -> Result<Engine, Box<dyn std::error::Error>> {
     // SAFETY: Probe the system driver through the same loader used by cudarc.
     if !unsafe { cudarc::driver::sys::is_culib_present() } {
         return Err("NVIDIA CUDA driver library not found".into());
@@ -298,9 +369,11 @@ fn start(device: usize) -> Result<Engine, Box<dyn std::error::Error>> {
         })?;
     let kernel = module.load_function("fill_terrain_select")?;
     let prepare_table = module.load_function("prepare_terrain_y")?;
+    let caps = DeviceCapabilities::query(&context);
+    let (lanes, streams_source) = resolve_streams(caps, configured_streams);
     let (jobs, rx) = bounded(MAX_BATCH);
     let disabled = Arc::new(AtomicBool::new(false));
-    for index in 0..LANES {
+    for index in 0..lanes {
         let mut worker = worker::Lane::new(context.new_stream()?, kernel.clone(), false, true);
         worker.enable_selection();
         worker.enable_smear_table(prepare_table.clone());
@@ -313,6 +386,10 @@ fn start(device: usize) -> Result<Engine, Box<dyn std::error::Error>> {
             })?;
     }
     ACTIVE_DEVICE.store(device, Ordering::Relaxed);
+    let sms = caps
+        .sm_count
+        .map(|n| format!("{n} SMs, "))
+        .unwrap_or_default();
     let vram = context
         .mem_get_info()
         .map(|(free, total)| {
@@ -324,7 +401,7 @@ fn start(device: usize) -> Result<Engine, Box<dyn std::error::Error>> {
         })
         .unwrap_or_default();
     tracing::info!(
-        "World generation uses CUDA on cuda:{device} ({gpu}, {arch}, {vram}{LANES} streams)"
+        "World generation uses CUDA on cuda:{device} ({gpu}, {arch}, {sms}{vram}{lanes} streams [{streams_source}])"
     );
     Ok(Engine {
         context,
@@ -353,7 +430,7 @@ fn disable(flag: &AtomicBool, reason: impl std::fmt::Display) {
 
 fn start_from_config(config: WorldgenConfig) -> Result<Option<Engine>, Box<dyn std::error::Error>> {
     match config.backend {
-        WorldgenBackend::Cuda => start(config.device).map(Some),
+        WorldgenBackend::Cuda => start(config.device, config.streams).map(Some),
         WorldgenBackend::Cpu | WorldgenBackend::Vulkan | WorldgenBackend::Metal => Ok(None),
     }
 }

@@ -79,6 +79,7 @@ fn live_cuda_noise_stage_matches_cpu() {
     initialize(pumpkin_config::world::WorldgenConfig {
         backend: pumpkin_config::world::WorldgenBackend::Cuda,
         device: 0,
+        streams: 0,
     });
     let engine = engine().expect("CUDA backend");
     let before = cuda_worldgen_stats();
@@ -303,4 +304,34 @@ fn pipeline_readback_preserves_chunk_and_plane_order(engine: &Engine) {
             );
         }
     }
+}
+
+#[test]
+fn resolve_streams_scales_with_device_capabilities_and_respects_override() {
+    let caps = |sm_count, max_blocks_per_sm, async_engines, concurrent_kernels, host_cpus| {
+        DeviceCapabilities {
+            sm_count: Some(sm_count),
+            max_blocks_per_sm: Some(max_blocks_per_sm),
+            async_engines: Some(async_engines),
+            concurrent_kernels: Some(concurrent_kernels),
+            host_cpus,
+        }
+    };
+
+    // No DMA or kernel overlap hardware -> 1 stream.
+    assert_eq!(resolve_streams(caps(24, 24, 0, false, 16), 0), (1, "auto"));
+    // Mid-range GPU (RTX 4060: 24 SMs * 24 blocks = 576) -> 2 streams (double buffering).
+    assert_eq!(resolve_streams(caps(24, 24, 2, true, 16), 0), (2, "auto"));
+    // High-end GPU (RTX 4080: 76 SMs * 24 blocks = 1824) -> 3 streams.
+    assert_eq!(resolve_streams(caps(76, 24, 2, true, 16), 0), (3, "auto"));
+    // Flagship / DC GPU (H100: 132 SMs * 32 blocks = 4224) -> 4 streams (capped for batching).
+    assert_eq!(resolve_streams(caps(132, 32, 2, true, 32), 0), (4, "auto"));
+    // Small host CPU caps auto streams so workers don't starve Rayon.
+    assert_eq!(resolve_streams(caps(132, 32, 2, true, 4), 0), (2, "auto"));
+    // Explicit config overrides auto and clamps to MAX_LANES.
+    assert_eq!(resolve_streams(caps(24, 24, 2, true, 16), 3), (3, "config"));
+    assert_eq!(
+        resolve_streams(caps(24, 24, 2, true, 16), 99),
+        (MAX_LANES, "config")
+    );
 }

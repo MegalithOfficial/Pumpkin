@@ -32,6 +32,8 @@ pub struct WorldgenConfig {
     pub backend: WorldgenBackend,
     /// GPU device index (`0` = first GPU, `1` = second GPU, ...). Ignored on CPU.
     pub device: usize,
+    /// Number of concurrent GPU worker streams (`0` = auto based on GPU SM count). Ignored on CPU.
+    pub streams: usize,
 }
 
 /// Backend used to generate terrain.
@@ -125,15 +127,17 @@ mod tests {
         let legacy: LevelConfig = config.clone().try_into().unwrap();
         assert_eq!(legacy.generation.backend, WorldgenBackend::Cpu);
         assert_eq!(legacy.generation.device, 0);
+        assert_eq!(legacy.generation.streams, 0);
 
-        for (name, expected, device) in [
-            ("cuda", WorldgenBackend::Cuda, 1),
-            ("vulkan", WorldgenBackend::Vulkan, 2),
-            ("metal", WorldgenBackend::Metal, 0),
+        for (name, expected, device, streams) in [
+            ("cuda", WorldgenBackend::Cuda, 1, 4),
+            ("vulkan", WorldgenBackend::Vulkan, 2, 0),
+            ("metal", WorldgenBackend::Metal, 0, 2),
         ] {
             let mut generation = toml::map::Map::new();
             generation.insert("backend".to_owned(), toml::Value::String(name.to_owned()));
             generation.insert("device".to_owned(), toml::Value::Integer(device));
+            generation.insert("streams".to_owned(), toml::Value::Integer(streams));
             let mut next = config.clone();
             next.as_table_mut()
                 .unwrap()
@@ -141,6 +145,7 @@ mod tests {
             let parsed: LevelConfig = next.try_into().unwrap();
             assert_eq!(parsed.generation.backend, expected);
             assert_eq!(parsed.generation.device, usize::try_from(device).unwrap());
+            assert_eq!(parsed.generation.streams, usize::try_from(streams).unwrap());
         }
     }
 
