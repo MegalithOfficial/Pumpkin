@@ -10,6 +10,7 @@ gpu-worldgen = []
 cuda-worldgen = ["gpu-worldgen", "dep:cudarc"]
 cuda-worldgen-all = ["cuda-worldgen"]
 vulkan-worldgen = ["gpu-worldgen", "dep:vulkano"]
+metal-worldgen = ["gpu-worldgen", "dep:objc2", "dep:objc2-foundation", "dep:objc2-metal"]
 
 [dependencies]
 vulkano = { version = "0.35", optional = true }
@@ -65,6 +66,26 @@ tokio-util = { workspace = true, features = ["rt"] }
 rand.workspace = true
 rustc-hash.workspace = true
 slotmap.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", optional = true }
+objc2-foundation = { version = "0.3", optional = true, features = [
+    "NSArray",
+    "NSError",
+    "NSString",
+] }
+objc2-metal = { version = "0.3", optional = true, features = [
+    "MTLBuffer",
+    "MTLCommandBuffer",
+    "MTLCommandEncoder",
+    "MTLCommandQueue",
+    "MTLComputeCommandEncoder",
+    "MTLComputePipeline",
+    "MTLDevice",
+    "MTLLibrary",
+    "MTLResource",
+    "MTLTypes",
+] }
 
 [dev-dependencies]
 tempfile.workspace = true
