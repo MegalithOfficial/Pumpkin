@@ -3,27 +3,8 @@ use crate::{
     random::{RandomDeriverImpl, RandomImpl},
 };
 
-use super::volume::DensityVolume;
+use super::{GRADIENT_VECTORS, volume::DensityVolume};
 use crate::math::smoothstep;
-
-const GRADIENTS: [[f32; 3]; 16] = [
-    [1.0, 1.0, 0.0],
-    [-1.0, 1.0, 0.0],
-    [1.0, -1.0, 0.0],
-    [-1.0, -1.0, 0.0],
-    [1.0, 0.0, 1.0],
-    [-1.0, 0.0, 1.0],
-    [1.0, 0.0, -1.0],
-    [-1.0, 0.0, -1.0],
-    [0.0, 1.0, 1.0],
-    [0.0, -1.0, 1.0],
-    [0.0, 1.0, -1.0],
-    [0.0, -1.0, -1.0],
-    [1.0, 1.0, 0.0],
-    [0.0, -1.0, 1.0],
-    [-1.0, 1.0, 0.0],
-    [0.0, -1.0, -1.0],
-];
 
 const ROUND_OFF: f64 = 33_554_432.0;
 const HALF_ROUND_OFF: f64 = f64::from_bits(0x416F_FFFF_FFFF_FFFF);
@@ -50,7 +31,7 @@ pub trait Noise {
 
 #[inline]
 fn grad_dot(hash: i32, x: f32, y: f32, z: f32) -> f32 {
-    let g = &GRADIENTS[(hash & 15) as usize];
+    let g = &GRADIENT_VECTORS[(hash & 15) as usize];
     g[0] * x + g[1] * y + g[2] * z
 }
 
@@ -157,6 +138,11 @@ impl PerlinNoise {
         }
     }
 
+    #[must_use]
+    pub const fn permutations(&self) -> &[u8; 256] {
+        &self.perms
+    }
+
     #[inline]
     fn permute(&self, x: i32) -> i32 {
         i32::from(self.perms[(x & 0xFF) as usize])
@@ -164,7 +150,7 @@ impl PerlinNoise {
 
     #[inline]
     fn permute_to_grad(&self, x: i32) -> &'static [f32; 3] {
-        &GRADIENTS[(self.permute(x) & 15) as usize]
+        &GRADIENT_VECTORS[(self.permute(x) & 15) as usize]
     }
 
     #[expect(clippy::too_many_arguments)]
@@ -390,6 +376,11 @@ impl SmearedPerlinNoise {
             noise: PerlinNoise::new(random),
             fudge_y_scale,
         }
+    }
+
+    #[must_use]
+    pub const fn parts(&self) -> (&PerlinNoise, f64) {
+        (&self.noise, self.fudge_y_scale)
     }
 
     #[inline]
@@ -736,6 +727,11 @@ impl NormalNoise {
             stack: NoiseStack::new(layers),
             max_value: (target_amplitude * TARGET_DEVIATION * 6.0) as f32,
         }
+    }
+
+    #[must_use]
+    pub fn layers(&self) -> &[Layer<PerlinNoise>] {
+        &self.stack.layers
     }
 
     #[must_use]

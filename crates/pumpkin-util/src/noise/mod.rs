@@ -12,89 +12,29 @@ pub struct Gradient {
     z: f64,
 }
 
+const GRADIENT_VECTORS: [[f32; 3]; 16] = include!("perlin_gradients.in");
+
 /// A pre-computed set of 16 gradient vectors for 3D noise generation.
-pub const GRADIENTS: [Gradient; 16] = [
-    Gradient {
-        x: 1f64,
-        y: 1f64,
-        z: 0f64,
-    },
-    Gradient {
-        x: -1f64,
-        y: 1f64,
-        z: 0f64,
-    },
-    Gradient {
-        x: 1f64,
-        y: -1f64,
-        z: 0f64,
-    },
-    Gradient {
-        x: -1f64,
-        y: -1f64,
-        z: 0f64,
-    },
-    Gradient {
-        x: 1f64,
-        y: 0f64,
-        z: 1f64,
-    },
-    Gradient {
-        x: -1f64,
-        y: 0f64,
-        z: 1f64,
-    },
-    Gradient {
-        x: 1f64,
-        y: 0f64,
-        z: -1f64,
-    },
-    Gradient {
-        x: -1f64,
-        y: 0f64,
-        z: -1f64,
-    },
-    Gradient {
-        x: 0f64,
-        y: 1f64,
-        z: 1f64,
-    },
-    Gradient {
-        x: 0f64,
-        y: -1f64,
-        z: 1f64,
-    },
-    Gradient {
-        x: 0f64,
-        y: 1f64,
-        z: -1f64,
-    },
-    Gradient {
-        x: 0f64,
-        y: -1f64,
-        z: -1f64,
-    },
-    Gradient {
-        x: 1f64,
-        y: 1f64,
-        z: 0f64,
-    },
-    Gradient {
-        x: 0f64,
-        y: -1f64,
-        z: 1f64,
-    },
-    Gradient {
-        x: -1f64,
-        y: 1f64,
-        z: 0f64,
-    },
-    Gradient {
-        x: 0f64,
-        y: -1f64,
-        z: -1f64,
-    },
-];
+pub const GRADIENTS: [Gradient; 16] = {
+    let mut gradients = [const {
+        Gradient {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }
+    }; GRADIENT_VECTORS.len()];
+    let mut index = 0;
+    while index < gradients.len() {
+        let [x, y, z] = GRADIENT_VECTORS[index];
+        gradients[index] = Gradient {
+            x: x as f64,
+            y: y as f64,
+            z: z as f64,
+        };
+        index += 1;
+    }
+    gradients
+};
 
 impl Gradient {
     /// Computes the dot product of this gradient vector with the given coordinates.
