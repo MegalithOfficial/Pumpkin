@@ -19,11 +19,17 @@ pub mod structure;
 mod surface;
 
 use generator::VanillaGenerator;
+use pumpkin_config::world::WorldgenConfig;
 use pumpkin_data::dimension::Dimension;
 use pumpkin_util::{
     random::xoroshiro128::{Xoroshiro, XoroshiroSplitter},
     world_seed::Seed,
 };
+
+/// Select and initialize the process-wide backend before creating server worlds.
+pub fn initialize_worldgen_backend(config: WorldgenConfig) {
+    noise::gpu::initialize(config);
+}
 
 #[must_use]
 pub fn get_world_gen(

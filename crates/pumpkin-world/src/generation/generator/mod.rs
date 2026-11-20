@@ -147,6 +147,9 @@ impl WorldGenerator {
 pub struct VanillaGenerator {
     pub random_config: GlobalRandomConfig,
     pub base_router: ProtoNoiseRouters,
+    #[cfg(feature = "cuda-worldgen")]
+    pub(crate) cuda_plan:
+        std::sync::OnceLock<Option<Arc<crate::generation::noise::gpu::cuda::grid::Plan>>>,
     pub dimension: Dimension,
     pub settings: &'static NoiseSettings,
     pub surface_rule: &'static MaterialRule,
@@ -166,6 +169,26 @@ pub struct VanillaGenerator {
 }
 
 impl VanillaGenerator {
+    pub(crate) fn noise_density_volume(
+        &self,
+        chunk_x: i32,
+        chunk_z: i32,
+    ) -> pumpkin_util::noise::volume::DensityVolume {
+        use super::positions::chunk_pos::{start_block_x, start_block_z};
+        use pumpkin_util::noise::volume::DensityVolume;
+
+        let shape = &self.settings.shape;
+        let width = super::noise::CHUNK_DIM as usize;
+        DensityVolume::with_block_step(
+            width,
+            usize::from(shape.height),
+            width,
+            start_block_x(chunk_x),
+            i32::from(shape.min_y),
+            start_block_z(chunk_z),
+        )
+    }
+
     /// Whether `/locate` may look for `key` through the set at `set_index`, like vanilla
     /// `ChunkGeneratorStructureState.getPlacementsForStructure`: the set has to generate in
     /// this dimension and one of the structure's own biomes has to be possible here.
@@ -321,6 +344,8 @@ impl VanillaGenerator {
         Self {
             random_config,
             base_router,
+            #[cfg(feature = "cuda-worldgen")]
+            cuda_plan: std::sync::OnceLock::new(),
             dimension,
             settings,
             surface_rule,

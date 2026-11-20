@@ -25,13 +25,20 @@ const BLENDED_MAIN_FIRST_OCTAVE: i32 = -7;
 const SMEARED_RANGE_BASE: f64 = 2.0;
 
 pub struct Noise {
-    sampler: DoublePerlinNoiseSampler,
-    data: &'static NoiseData,
+    #[cfg(feature = "cuda-worldgen")]
+    pub(crate) resident: crate::generation::noise::gpu::cuda::ResidentLayers,
+    pub(crate) sampler: DoublePerlinNoiseSampler,
+    pub(crate) data: &'static NoiseData,
 }
 
 impl Noise {
     pub const fn new(sampler: DoublePerlinNoiseSampler, data: &'static NoiseData) -> Self {
-        Self { sampler, data }
+        Self {
+            sampler,
+            data,
+            #[cfg(feature = "cuda-worldgen")]
+            resident: std::sync::OnceLock::new(),
+        }
     }
 }
 
@@ -354,6 +361,8 @@ fn fbm_range_max(first_octave: i32, smear_scale_y: f64, value_factor: f64) -> f3
 }
 
 pub struct InterpolatedNoiseSampler {
+    #[cfg(feature = "cuda-worldgen")]
+    pub(crate) resident: crate::generation::noise::gpu::cuda::BlendedResident,
     min_limit_noise: NoiseStack<SmearedPerlinNoise>,
     max_limit_noise: NoiseStack<SmearedPerlinNoise>,
     main_noise: NoiseStack<SmearedPerlinNoise>,
@@ -389,6 +398,8 @@ impl InterpolatedNoiseSampler {
             BLENDED_MAIN_FACTOR,
         );
         Self {
+            #[cfg(feature = "cuda-worldgen")]
+            resident: std::sync::OnceLock::new(),
             min_limit_noise,
             max_limit_noise,
             main_noise,
@@ -402,6 +413,19 @@ impl InterpolatedNoiseSampler {
                 BLENDED_LIMIT_FACTOR,
             ),
         }
+    }
+
+    #[cfg(feature = "cuda-worldgen")]
+    pub(crate) fn volume_stacks(&self) -> [(&NoiseStack<SmearedPerlinNoise>, f64, f64); 3] {
+        [
+            (
+                &self.main_noise,
+                self.main_xz_multiplier,
+                self.main_y_multiplier,
+            ),
+            (&self.min_limit_noise, self.xz_multiplier, self.y_multiplier),
+            (&self.max_limit_noise, self.xz_multiplier, self.y_multiplier),
+        ]
     }
 
     #[inline]

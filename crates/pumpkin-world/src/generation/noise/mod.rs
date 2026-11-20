@@ -1,3 +1,6 @@
+pub(crate) mod gpu;
+#[cfg(feature = "cuda-worldgen")]
+pub use gpu::cuda::{CudaWorldgenStats, cuda_worldgen_stats};
 pub mod aquifer_sampler;
 pub mod ore_sampler;
 pub mod perlin;
@@ -188,6 +191,13 @@ impl<'a> ChunkNoiseGenerator<'a> {
     #[must_use]
     pub const fn volume(&self) -> &DensityVolume {
         &self.volume
+    }
+
+    pub(crate) fn has_only_aquifer_sampler(&self) -> bool {
+        matches!(
+            self.state_sampler.samplers.as_ref(),
+            [BlockStateSampler::Aquifer(_)]
+        )
     }
 
     pub fn sample_density(&mut self) -> ChunkDensities {

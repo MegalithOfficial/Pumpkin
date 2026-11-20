@@ -136,6 +136,10 @@ impl ChunkNoiseFunctionComponent<'_> {
         buffer: &mut [f32],
         volume: &DensityVolume,
     ) {
+        #[cfg(feature = "cuda-worldgen")]
+        if crate::generation::noise::gpu::cuda::try_volume(component_stack, buffer, volume) {
+            return;
+        }
         if let Some((top_component, component_stack)) = component_stack.split_last_mut() {
             top_component.sample_volume(component_stack, buffer, volume);
         }
@@ -180,6 +184,8 @@ macro_rules! sample_function {
 }
 
 pub struct ChunkNoiseRouter<'a> {
+    #[cfg(feature = "cuda-worldgen")]
+    source: &'a ProtoNoiseRouter,
     barrier_noise: usize,
     fluid_level_floodedness_noise: usize,
     fluid_level_spread_noise: usize,
@@ -203,7 +209,33 @@ impl ChunkNoiseRouter<'_> {
     sample_function!(lava_noise, lava_noise_volume);
     sample_function!(erosion, erosion_volume);
     sample_function!(depth, depth_volume);
-    sample_function!(final_density, final_density_volume);
+    #[inline]
+    pub fn final_density(&mut self, pos: &Vector3<i32>) -> f32 {
+        ChunkNoiseFunctionComponent::sample_from_stack(
+            &mut self.component_stack[..=self.final_density],
+            pos,
+        )
+    }
+
+    #[inline]
+    pub fn final_density_volume(&mut self, buffer: &mut [f32], volume: &DensityVolume) {
+        let stack = &mut self.component_stack[..=self.final_density];
+        #[cfg(feature = "cuda-worldgen")]
+        if crate::generation::noise::gpu::cuda::grid::try_sample_density(
+            stack,
+            buffer,
+            volume,
+            self.source,
+        ) {
+            return;
+        }
+        ChunkNoiseFunctionComponent::sample_volume_from_stack(stack, buffer, volume);
+    }
+
+    #[cfg(feature = "cuda-worldgen")]
+    pub(crate) fn final_density_stack(&self) -> &[ChunkNoiseFunctionComponent<'_>] {
+        &self.component_stack[..=self.final_density]
+    }
     sample_function!(vein_toggle, vein_toggle_volume);
     sample_function!(vein_ridged, vein_ridged_volume);
     sample_function!(vein_gap, vein_gap_volume);
@@ -300,6 +332,11 @@ impl<'a> ChunkVeinRouter<'a> {
 }
 
 impl<'a> ChunkNoiseRouter<'a> {
+    #[cfg(feature = "cuda-worldgen")]
+    pub(crate) fn generate_for_prefetch(base: &'a ProtoNoiseRouter) -> Self {
+        Self::generate_slice(base, base.final_density, None)
+    }
+
     #[must_use]
     pub fn component_stack_mut(&mut self) -> &mut [ChunkNoiseFunctionComponent<'a>] {
         &mut self.component_stack
@@ -359,6 +396,8 @@ impl<'a> ChunkNoiseRouter<'a> {
         build_options: Option<&ChunkNoiseFunctionBuilderOptions>,
     ) -> Self {
         Self {
+            #[cfg(feature = "cuda-worldgen")]
+            source: base,
             barrier_noise: base.barrier_noise,
             fluid_level_floodedness_noise: base.fluid_level_floodedness_noise,
             fluid_level_spread_noise: base.fluid_level_spread_noise,

@@ -55,6 +55,12 @@ impl Cache {
     }
 }
 
+impl Cache {
+    pub(crate) fn needs_volume(&self, volume: &DensityVolume) -> bool {
+        self.volume.as_ref() != Some(volume) || self.buffer.is_none()
+    }
+}
+
 impl NoiseFunctionComponentRange for Cache {
     #[inline]
     fn min(&self) -> f32 {
@@ -96,7 +102,7 @@ impl MutableChunkNoiseFunctionComponentImpl for Cache {
         buffer: &mut [f32],
         volume: &DensityVolume,
     ) {
-        if self.volume.as_ref() != Some(volume) || self.buffer.is_none() {
+        if self.needs_volume(volume) {
             self.buffer = None;
             let mut cached = DensityBuffer::acquire(volume);
             ChunkNoiseFunctionComponent::sample_volume_from_stack(
@@ -124,6 +130,12 @@ pub struct Interpolated {
 }
 
 impl Interpolated {
+    #[cfg(feature = "cuda-worldgen")]
+    pub(crate) fn supports_chunk_translation(&self) -> bool {
+        self.cell_size_xz > 0
+            && i32::from(crate::generation::noise::CHUNK_DIM).rem_euclid(self.cell_size_xz) == 0
+    }
+
     #[must_use]
     pub const fn new(
         input_index: usize,
@@ -152,12 +164,7 @@ impl Interpolated {
             && volume.min_block_z.rem_euclid(self.cell_size_xz) == 0
     }
 
-    fn sample_with_block_step(
-        &self,
-        component_stack: &mut [ChunkNoiseFunctionComponent],
-        buffer: &mut [f32],
-        volume: &DensityVolume,
-    ) {
+    fn corner_volume(&self, volume: &DensityVolume) -> (DensityVolume, [usize; 3]) {
         let min_cell_x = volume.min_block_x.div_euclid(self.cell_size_xz);
         let min_cell_y = volume.min_block_y.div_euclid(self.cell_size_y);
         let min_cell_z = volume.min_block_z.div_euclid(self.cell_size_xz);
@@ -174,7 +181,7 @@ impl Interpolated {
                 count + 1
             }
         };
-        let cell_volume = DensityVolume::new(
+        let corners = DensityVolume::new(
             corner_count(cell_count_x, max_block_x, self.cell_size_xz),
             corner_count(cell_count_y, max_block_y, self.cell_size_y),
             corner_count(cell_count_z, max_block_z, self.cell_size_xz),
@@ -185,6 +192,27 @@ impl Interpolated {
             self.cell_size_y,
             self.cell_size_xz,
         );
+        (corners, [cell_count_x, cell_count_y, cell_count_z])
+    }
+
+    #[cfg(feature = "cuda-worldgen")]
+    pub(crate) fn input_volume(&self, volume: &DensityVolume) -> Option<DensityVolume> {
+        if self.is_cell_aligned(volume) {
+            Some(*volume)
+        } else if volume.is_block_step() {
+            Some(self.corner_volume(volume).0)
+        } else {
+            None
+        }
+    }
+
+    fn sample_with_block_step(
+        &self,
+        component_stack: &mut [ChunkNoiseFunctionComponent],
+        buffer: &mut [f32],
+        volume: &DensityVolume,
+    ) {
+        let (cell_volume, [cell_count_x, cell_count_y, cell_count_z]) = self.corner_volume(volume);
         let mut corners = DensityBuffer::acquire(&cell_volume);
         ChunkNoiseFunctionComponent::sample_volume_from_stack(
             &mut component_stack[..=self.input_index],
