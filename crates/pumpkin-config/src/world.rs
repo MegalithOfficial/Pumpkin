@@ -9,6 +9,9 @@ use crate::{chunk::ChunkConfig, lighting::LightingEngineConfig};
 pub struct LevelConfig {
     /// Configuration for chunk behaviour and management.
     pub chunk: ChunkConfig,
+    /// Process-wide settings for terrain generation.
+    #[serde(default)]
+    pub generation: WorldgenConfig,
     /// Configuration for lighting engine propagation mode.
     #[serde(default)]
     pub lighting: LightingEngineConfig,
@@ -19,6 +22,31 @@ pub struct LevelConfig {
     #[serde(default)]
     pub entity_islands: EntityIslandsConfig,
     // TODO: More options
+}
+
+/// Settings for terrain generation backend selection.
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct WorldgenConfig {
+    /// Backend used to generate terrain.
+    pub backend: WorldgenBackend,
+    /// GPU device index (`0` = first GPU, `1` = second GPU, ...). Ignored on CPU.
+    pub device: usize,
+}
+
+/// Backend used to generate terrain.
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum WorldgenBackend {
+    /// Run terrain generation on the CPU.
+    #[default]
+    Cpu,
+    /// Offload supported density functions to NVIDIA CUDA.
+    Cuda,
+    /// Offload supported density functions to Vulkan compute.
+    Vulkan,
+    /// Offload supported density functions to Apple Metal.
+    Metal,
 }
 
 /// Safety margins for ticking entities in parallel islands. Lower values tick more entities in
@@ -78,6 +106,7 @@ impl Default for LevelConfig {
     fn default() -> Self {
         Self {
             chunk: ChunkConfig::default(),
+            generation: WorldgenConfig::default(),
             lighting: LightingEngineConfig::default(),
             autosave_ticks: default_autosave_ticks(),
             entity_islands: EntityIslandsConfig::default(),
@@ -88,6 +117,32 @@ impl Default for LevelConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worldgen_config_defaults_to_cpu_and_accepts_gpu_backends() {
+        let mut config = toml::Value::try_from(LevelConfig::default()).unwrap();
+        config.as_table_mut().unwrap().remove("generation");
+        let legacy: LevelConfig = config.clone().try_into().unwrap();
+        assert_eq!(legacy.generation.backend, WorldgenBackend::Cpu);
+        assert_eq!(legacy.generation.device, 0);
+
+        for (name, expected, device) in [
+            ("cuda", WorldgenBackend::Cuda, 1),
+            ("vulkan", WorldgenBackend::Vulkan, 2),
+            ("metal", WorldgenBackend::Metal, 0),
+        ] {
+            let mut generation = toml::map::Map::new();
+            generation.insert("backend".to_owned(), toml::Value::String(name.to_owned()));
+            generation.insert("device".to_owned(), toml::Value::Integer(device));
+            let mut next = config.clone();
+            next.as_table_mut()
+                .unwrap()
+                .insert("generation".to_owned(), toml::Value::Table(generation));
+            let parsed: LevelConfig = next.try_into().unwrap();
+            assert_eq!(parsed.generation.backend, expected);
+            assert_eq!(parsed.generation.device, usize::try_from(device).unwrap());
+        }
+    }
 
     #[test]
     fn default_level_config_enables_autosave() {
