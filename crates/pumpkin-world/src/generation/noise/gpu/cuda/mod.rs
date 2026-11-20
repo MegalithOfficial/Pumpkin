@@ -459,7 +459,7 @@ pub fn scheduled_lookahead_enabled() -> bool {
 }
 
 fn engine() -> Option<&'static Engine> {
-    let engine = initialized_engine(WorldgenConfig::default())?;
+    let engine = ENGINE.get()?.as_ref()?;
     (!engine.disabled.load(Ordering::Acquire)).then_some(engine)
 }
 
