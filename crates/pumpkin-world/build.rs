@@ -35,17 +35,34 @@ enum ArchPlan {
 }
 
 fn main() -> io::Result<()> {
-    let dir = "src/generation/noise/gpu/cuda";
-    println!("cargo:rerun-if-changed={dir}/density.cuh");
-    println!("cargo:rerun-if-changed={dir}/worldgen.cu");
+    let cuda_dir = "src/generation/noise/gpu/cuda";
+    let vulkan_dir = "src/generation/noise/gpu/vulkan";
+    println!("cargo:rerun-if-changed={cuda_dir}/density.cuh");
+    println!("cargo:rerun-if-changed={cuda_dir}/worldgen.cu");
+    println!("cargo:rerun-if-changed={vulkan_dir}/worldgen.comp");
     println!("cargo:rerun-if-changed=../pumpkin-util/src/noise/perlin_gradients.in");
-    if env::var_os("CARGO_FEATURE_CUDA_WORLDGEN").is_none() {
+
+    let build_cuda = env::var_os("CARGO_FEATURE_CUDA_WORLDGEN").is_some();
+    let build_vulkan = env::var_os("CARGO_FEATURE_VULKAN_WORLDGEN").is_some();
+    if !build_cuda && !build_vulkan {
         return Ok(());
     }
+
+    let out_dir = PathBuf::from(env::var_os("OUT_DIR").ok_or(io::ErrorKind::NotFound)?);
+
+    if build_cuda {
+        compile_cuda(&out_dir, cuda_dir)?;
+    }
+    if build_vulkan {
+        compile_vulkan(&out_dir, vulkan_dir)?;
+    }
+    Ok(())
+}
+
+fn compile_cuda(out_dir: &PathBuf, dir: &str) -> io::Result<()> {
     println!("cargo:rerun-if-env-changed=NVCC");
     println!("cargo:rerun-if-env-changed=PUMPKIN_CUDA_ARCH");
 
-    let out_dir = PathBuf::from(env::var_os("OUT_DIR").ok_or(io::ErrorKind::NotFound)?);
     let mut header = File::create(out_dir.join("perlin_gradients.cuh"))?;
     writeln!(
         header,
@@ -95,7 +112,7 @@ fn main() -> io::Result<()> {
 
     let status = command
         .arg("-I")
-        .arg(&out_dir)
+        .arg(out_dir)
         .arg(format!("{dir}/worldgen.cu"))
         .arg("-o")
         .arg(out_dir.join("worldgen.fatbin"))
@@ -104,6 +121,57 @@ fn main() -> io::Result<()> {
         Ok(())
     } else {
         Err(io::Error::other("nvcc failed to build worldgen.fatbin"))
+    }
+}
+
+fn compile_vulkan(out_dir: &PathBuf, dir: &str) -> io::Result<()> {
+    println!("cargo:rerun-if-env-changed=GLSLC");
+
+    let mut header = File::create(out_dir.join("perlin_gradients.glsl"))?;
+    writeln!(
+        header,
+        "const vec3 GRADIENTS[{}] = vec3[{}](",
+        GRADIENTS.len(),
+        GRADIENTS.len()
+    )?;
+    for (index, [x, y, z]) in GRADIENTS.iter().enumerate() {
+        let comma = if index + 1 < GRADIENTS.len() { "," } else { "" };
+        writeln!(header, "    vec3({x:?}, {y:?}, {z:?}){comma}")?;
+    }
+    writeln!(header, ");")?;
+
+    let shader = format!("{dir}/worldgen.comp");
+    let output = out_dir.join("worldgen.spv");
+
+    let glslc = env::var_os("GLSLC").unwrap_or_else(|| OsString::from("glslc"));
+    let status = Command::new(&glslc)
+        .args(["--target-env=vulkan1.2", "-O", "-I"])
+        .arg(out_dir)
+        .arg(&shader)
+        .arg("-o")
+        .arg(&output)
+        .status();
+
+    match status {
+        Ok(status) if status.success() => Ok(()),
+        Ok(_) => Err(io::Error::other("glslc failed to build worldgen.spv")),
+        Err(error) if error.kind() == io::ErrorKind::NotFound && env::var_os("GLSLC").is_none() => {
+            let fallback = Command::new("glslangValidator")
+                .args(["-V", "--target-env", "vulkan1.2", "-I"])
+                .arg(out_dir)
+                .arg(&shader)
+                .arg("-o")
+                .arg(&output)
+                .status()?;
+            if fallback.success() {
+                Ok(())
+            } else {
+                Err(io::Error::other(
+                    "glslangValidator failed to build worldgen.spv",
+                ))
+            }
+        }
+        Err(error) => Err(error),
     }
 }
 

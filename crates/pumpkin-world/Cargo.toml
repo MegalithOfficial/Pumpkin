@@ -9,8 +9,10 @@ license.workspace = true
 gpu-worldgen = []
 cuda-worldgen = ["gpu-worldgen", "dep:cudarc"]
 cuda-worldgen-all = ["cuda-worldgen"]
+vulkan-worldgen = ["gpu-worldgen", "dep:vulkano"]
 
 [dependencies]
+vulkano = { version = "0.35", optional = true }
 cudarc = { version = "0.19.10", optional = true, default-features = false, features = [
     "std",
     "driver",

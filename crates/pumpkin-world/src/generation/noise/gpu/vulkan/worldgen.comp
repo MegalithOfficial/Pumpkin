@@ -1,0 +1,398 @@
+#version 450
+#extension GL_ARB_gpu_shader_fp64 : require
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+#include "perlin_gradients.glsl"
+
+struct Layer {
+    double offset_x;
+    double offset_y;
+    double offset_z;
+    double xz_scale;
+    double y_scale;
+    float amplitude;
+    uint _pad0;
+    uint permutations[64];
+};
+
+struct Operation {
+    int kind;
+    float a;
+    float b;
+};
+
+struct Tail {
+    Operation ops[8];
+    int count;
+};
+
+struct PlaneDesc {
+    uint layer_offset;
+    uint layer_count;
+    Tail tail;
+};
+
+struct BlendedDesc {
+    uint layer_offset;
+    uint smear_offset;
+    uint main_count;
+    uint min_count;
+    uint total_count;
+    Tail tail;
+};
+
+struct SelectorDesc {
+    uint threshold_count;
+    float thresholds[4];
+    uint alternatives[5];
+};
+
+layout(std430, set = 0, binding = 0) readonly buffer LayersBuf {
+    Layer layers[];
+};
+
+layout(std430, set = 0, binding = 1) readonly buffer SmearBuf {
+    double smears[];
+};
+
+layout(std430, set = 0, binding = 2) readonly buffer BatchBuf {
+    uint plane_count;
+    int size_x;
+    int size_y;
+    int size_z;
+    int step_x;
+    int step_y;
+    int step_z;
+    uint _pad0;
+    int origins[24];
+    PlaneDesc planes[25];
+    BlendedDesc blended;
+    PlaneDesc companions[4];
+    uint binary_ops[4];
+    uint binary_slots[25];
+    SelectorDesc selectors[3];
+    uint selector_slots[25];
+} batch;
+
+layout(std430, set = 0, binding = 3) writeonly buffer OutputBuf {
+    float out_values[];
+};
+
+struct ColumnState {
+    int x0;
+    int x1;
+    int floor_z;
+    float rx;
+    float rz;
+    float tx;
+    float tz;
+};
+
+shared ColumnState columns[256];
+
+double wrap_coord(double x) {
+    const double round_off = 33554432.0LF;
+    const double half_round_off = 16777215.999999998LF;
+    if (x >= -half_round_off && x < half_round_off) {
+        return x;
+    }
+    precise double q = floor(x / round_off + 0.5LF);
+    precise double wrapped = x - q * round_off;
+    return wrapped;
+}
+
+int permute(uint layer_idx, int index) {
+    uint i = uint(index & 255);
+    return int((layers[layer_idx].permutations[i >> 2u] >> ((i & 3u) * 8u)) & 0xFFu);
+}
+
+float grad_dot(uint layer_idx, int hash, float x, float y, float z) {
+    int g = permute(layer_idx, hash) & 15;
+    precise float gx = GRADIENTS[g].x * x;
+    precise float gz = GRADIENTS[g].z * z;
+    precise float gy = GRADIENTS[g].y * y;
+    precise float xz = gx + gz;
+    precise float res = xz + gy;
+    return res;
+}
+
+float noise_lerp(float t, float start_v, float end_v) {
+    precise float diff = end_v - start_v;
+    precise float prod = t * diff;
+    precise float res = start_v + prod;
+    return res;
+}
+
+float smoothstep_noise(float x) {
+    precise float a = x * 6.0;
+    precise float b = a - 15.0;
+    precise float c = x * b;
+    precise float d = c + 10.0;
+    precise float x2 = x * x;
+    precise float x3 = x2 * x;
+    precise float res = x3 * d;
+    return res;
+}
+
+ColumnState prepare_column(uint layer_idx, int block_x, int block_z) {
+    precise double x = wrap_coord(double(block_x) * layers[layer_idx].xz_scale) + layers[layer_idx].offset_x;
+    precise double z = wrap_coord(double(block_z) * layers[layer_idx].xz_scale) + layers[layer_idx].offset_z;
+    double fx = floor(x);
+    double fz = floor(z);
+    int floor_x = int(fx);
+    int floor_z = int(fz);
+    precise double drx = x - fx;
+    precise double drz = z - fz;
+    float rx = float(drx);
+    float rz = float(drz);
+    ColumnState col;
+    col.x0 = permute(layer_idx, floor_x);
+    col.x1 = permute(layer_idx, floor_x + 1);
+    col.floor_z = floor_z;
+    col.rx = rx;
+    col.rz = rz;
+    col.tx = smoothstep_noise(rx);
+    col.tz = smoothstep_noise(rz);
+    return col;
+}
+
+float sample_y_relative(uint layer_idx, ColumnState col, int floor_y, float ry, float ty) {
+    int x0 = col.x0;
+    int x1 = col.x1;
+    int floor_z = col.floor_z;
+    float rx = col.rx;
+    float rz = col.rz;
+    float tx = col.tx;
+    float tz = col.tz;
+
+    int xy00 = permute(layer_idx, x0 + floor_y);
+    int xy10 = permute(layer_idx, x1 + floor_y);
+    int xy01 = permute(layer_idx, x0 + floor_y + 1);
+    int xy11 = permute(layer_idx, x1 + floor_y + 1);
+
+    float z0y0 = noise_lerp(
+        tx,
+        grad_dot(layer_idx, xy00 + floor_z, rx, ry, rz),
+        grad_dot(layer_idx, xy10 + floor_z, rx - 1.0, ry, rz)
+    );
+    float z0y1 = noise_lerp(
+        tx,
+        grad_dot(layer_idx, xy01 + floor_z, rx, ry - 1.0, rz),
+        grad_dot(layer_idx, xy11 + floor_z, rx - 1.0, ry - 1.0, rz)
+    );
+    float z1y0 = noise_lerp(
+        tx,
+        grad_dot(layer_idx, xy00 + floor_z + 1, rx, ry, rz - 1.0),
+        grad_dot(layer_idx, xy10 + floor_z + 1, rx - 1.0, ry, rz - 1.0)
+    );
+    float z1y1 = noise_lerp(
+        tx,
+        grad_dot(layer_idx, xy01 + floor_z + 1, rx, ry - 1.0, rz - 1.0),
+        grad_dot(layer_idx, xy11 + floor_z + 1, rx - 1.0, ry - 1.0, rz - 1.0)
+    );
+    return noise_lerp(tz, noise_lerp(ty, z0y0, z0y1), noise_lerp(ty, z1y0, z1y1));
+}
+
+float sample_y(uint layer_idx, ColumnState col, int block_y) {
+    precise double y = wrap_coord(double(block_y) * layers[layer_idx].y_scale) + layers[layer_idx].offset_y;
+    double fy = floor(y);
+    int floor_y = int(fy);
+    precise double dry = y - fy;
+    float ry = float(dry);
+    return sample_y_relative(layer_idx, col, floor_y, ry, smoothstep_noise(ry));
+}
+
+float apply_tail(Tail tail, float value) {
+    precise float v = value;
+    for (int i = tail.count - 1; i >= 0; --i) {
+        Operation op = tail.ops[i];
+        if (op.kind == 1) {
+            v = v + op.a;
+        } else if (op.kind == 2) {
+            v = v * op.a;
+        } else if (op.kind == 3) {
+            v = abs(v);
+        } else if (op.kind == 4) {
+            v = v * v;
+        } else if (op.kind == 5) {
+            precise float v2 = v * v;
+            v = v2 * v;
+        } else if (op.kind == 6) {
+            v = v > 0.0 ? v : v * op.a;
+        } else if (op.kind == 7) {
+            v = v < op.a ? op.a : (v > op.b ? op.b : v);
+        } else if (op.kind == 8) {
+            v = -v;
+        } else if (op.kind == 9) {
+            float clamped = v < -1.0 ? -1.0 : (v > 1.0 ? 1.0 : v);
+            precise float c2 = clamped * clamped;
+            precise float c3 = c2 * clamped;
+            precise float t1 = clamped / 2.0;
+            precise float t2 = c3 / 24.0;
+            v = t1 - t2;
+        } else if (op.kind == 10) {
+            v = v == 0.0 ? uintBitsToFloat(0x7F800000u) : 1.0 / v;
+        } else if (op.kind == 11) {
+            v = sqrt(v);
+        } else if (op.kind == 12) {
+            v = v > 0.0 ? 1.0 : (v < 0.0 ? -1.0 : 0.0);
+        }
+    }
+    return v;
+}
+
+float accumulate_column(uint layer_offset, uint layer_count, uint col_offset, int y) {
+    precise float value = 0.0;
+    for (uint i = 0u; i < layer_count; ++i) {
+        uint idx = layer_offset + i;
+        precise float term = layers[idx].amplitude * sample_y(idx, columns[col_offset + i], y);
+        value = value + term;
+    }
+    return value;
+}
+
+float sample_smear_stack(uint begin_i, uint end_i, int block_y) {
+    precise float value = 0.0;
+    for (uint i = begin_i; i < end_i; ++i) {
+        uint layer_idx = batch.blended.layer_offset + i;
+        double scale = smears[batch.blended.smear_offset + i];
+        precise double original_y = double(block_y) * layers[layer_idx].y_scale;
+        precise double y = wrap_coord(original_y) + layers[layer_idx].offset_y;
+        double fy = floor(y);
+        int floor_y = int(fy);
+        precise double relative_y = y - fy;
+        double limit = (original_y >= 0.0LF && original_y < relative_y) ? original_y : relative_y;
+        precise double fudge = floor(limit / scale + double(1.0e-7)) * scale;
+        precise double fudged_d = relative_y - fudge;
+        float fudged_y = float(fudged_d);
+        float alpha = smoothstep_noise(float(relative_y));
+        precise float term = layers[layer_idx].amplitude *
+            sample_y_relative(layer_idx, columns[i], floor_y, fudged_y, alpha);
+        value = value + term;
+    }
+    return value;
+}
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    uint chunk = gl_WorkGroupID.z / batch.plane_count;
+    uint plane_idx = gl_WorkGroupID.z % batch.plane_count;
+    int col_x = int(gl_WorkGroupID.x);
+    int col_z = int(gl_WorkGroupID.y);
+    int x = batch.origins[3u * chunk] + col_x * batch.step_x;
+    int base_y = batch.origins[3u * chunk + 1u];
+    int z = batch.origins[3u * chunk + 2u] + col_z * batch.step_z;
+    uint base_out = ((gl_WorkGroupID.z * uint(batch.size_z) + gl_WorkGroupID.y) * uint(batch.size_x) + gl_WorkGroupID.x) * uint(batch.size_y);
+
+    if (batch.blended.total_count != 0u && plane_idx == batch.plane_count - 1u) {
+        for (uint i = tid; i < batch.blended.total_count; i += 64u) {
+            columns[i] = prepare_column(batch.blended.layer_offset + i, x, z);
+        }
+        barrier();
+
+        uint mid = batch.blended.main_count + batch.blended.min_count;
+        for (int iy = int(tid); iy < batch.size_y; iy += 64) {
+            int y = base_y + iy * batch.step_y;
+            precise float alpha = sample_smear_stack(0u, batch.blended.main_count, y) + 0.5;
+            float value;
+            if (alpha <= 0.0) {
+                value = sample_smear_stack(batch.blended.main_count, mid, y);
+            } else if (alpha >= 1.0) {
+                value = sample_smear_stack(mid, batch.blended.total_count, y);
+            } else {
+                float low = sample_smear_stack(batch.blended.main_count, mid, y);
+                float high = sample_smear_stack(mid, batch.blended.total_count, y);
+                value = noise_lerp(alpha, low, high);
+            }
+            out_values[base_out + uint(iy)] = apply_tail(batch.blended.tail, value);
+        }
+        return;
+    }
+
+    PlaneDesc plane = batch.planes[plane_idx];
+    uint sel_slot = batch.selector_slots[plane_idx];
+    if (sel_slot != 0u) {
+        SelectorDesc sel = batch.selectors[sel_slot - 1u];
+        for (uint i = tid; i < plane.layer_count; i += 64u) {
+            columns[i] = prepare_column(plane.layer_offset + i, x, z);
+        }
+        uint col_off = plane.layer_count;
+        for (uint c = 0u; c <= sel.threshold_count; ++c) {
+            PlaneDesc alt = batch.planes[sel.alternatives[c]];
+            for (uint i = tid; i < alt.layer_count; i += 64u) {
+                columns[col_off + i] = prepare_column(alt.layer_offset + i, x, z);
+            }
+            col_off += alt.layer_count;
+        }
+        barrier();
+
+        for (int iy = int(tid); iy < batch.size_y; iy += 64) {
+            int y = base_y + iy * batch.step_y;
+            float selector_val = apply_tail(
+                plane.tail,
+                accumulate_column(plane.layer_offset, plane.layer_count, 0u, y)
+            );
+            uint choice = 0u;
+            uint alt_off = plane.layer_count;
+            while (choice < sel.threshold_count && !(selector_val < sel.thresholds[choice])) {
+                alt_off += batch.planes[sel.alternatives[choice]].layer_count;
+                ++choice;
+            }
+            PlaneDesc alt = batch.planes[sel.alternatives[choice]];
+            out_values[base_out + uint(iy)] = apply_tail(
+                alt.tail,
+                accumulate_column(alt.layer_offset, alt.layer_count, alt_off, y)
+            );
+        }
+        return;
+    }
+
+    uint bin_slot = batch.binary_slots[plane_idx];
+    if (bin_slot != 0u) {
+        PlaneDesc right = batch.companions[bin_slot - 1u];
+        uint op = batch.binary_ops[bin_slot - 1u];
+        for (uint i = tid; i < plane.layer_count; i += 64u) {
+            columns[i] = prepare_column(plane.layer_offset + i, x, z);
+        }
+        for (uint i = tid; i < right.layer_count; i += 64u) {
+            columns[plane.layer_count + i] = prepare_column(right.layer_offset + i, x, z);
+        }
+        barrier();
+
+        for (int iy = int(tid); iy < batch.size_y; iy += 64) {
+            int y = base_y + iy * batch.step_y;
+            float lhs = apply_tail(
+                plane.tail,
+                accumulate_column(plane.layer_offset, plane.layer_count, 0u, y)
+            );
+            float rhs = apply_tail(
+                right.tail,
+                accumulate_column(right.layer_offset, right.layer_count, plane.layer_count, y)
+            );
+            precise float res = 0.0;
+            if (op == 1u) {
+                res = lhs + rhs;
+            } else if (op == 2u) {
+                res = lhs - rhs;
+            } else if (op == 3u) {
+                res = lhs * rhs;
+            }
+            out_values[base_out + uint(iy)] = res;
+        }
+        return;
+    }
+
+    for (uint i = tid; i < plane.layer_count; i += 64u) {
+        columns[i] = prepare_column(plane.layer_offset + i, x, z);
+    }
+    barrier();
+
+    for (int iy = int(tid); iy < batch.size_y; iy += 64) {
+        int y = base_y + iy * batch.step_y;
+        out_values[base_out + uint(iy)] = apply_tail(
+            plane.tail,
+            accumulate_column(plane.layer_offset, plane.layer_count, 0u, y)
+        );
+    }
+}

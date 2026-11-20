@@ -67,7 +67,7 @@ impl Lookahead {
         let (requests, receiver) = bounded(limit);
         match thread::Builder::new()
             .name("GPU-Lookahead".to_string())
-            .spawn(move || prepare_grids(receiver))
+            .spawn(move || prepare_grids(&receiver))
         {
             Ok(thread) => Some((
                 Self {
@@ -116,7 +116,7 @@ impl Lookahead {
     }
 }
 
-fn prepare_grids(requests: Receiver<Request>) {
+fn prepare_grids(requests: &Receiver<Request>) {
     while let Ok(request) = requests.recv() {
         if request.cancel.load(Ordering::Acquire) {
             continue;

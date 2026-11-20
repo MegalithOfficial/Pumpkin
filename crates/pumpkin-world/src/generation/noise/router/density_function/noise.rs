@@ -416,7 +416,7 @@ impl InterpolatedNoiseSampler {
     }
 
     #[cfg(feature = "gpu-worldgen")]
-    pub(crate) fn volume_stacks(&self) -> [(&NoiseStack<SmearedPerlinNoise>, f64, f64); 3] {
+    pub(crate) const fn volume_stacks(&self) -> [(&NoiseStack<SmearedPerlinNoise>, f64, f64); 3] {
         [
             (
                 &self.main_noise,
