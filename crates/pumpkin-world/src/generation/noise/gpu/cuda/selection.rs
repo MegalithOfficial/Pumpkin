@@ -25,8 +25,8 @@ pub(super) struct Branch<'a, 'router> {
     prefix: &'a [Component<'router>],
 }
 
-impl<'a, 'router> Branch<'a, 'router> {
-    pub(super) fn sources(&self) -> usize {
+impl Branch<'_, '_> {
+    pub(super) const fn sources(&self) -> usize {
         self.alternatives.len() + 1
     }
 

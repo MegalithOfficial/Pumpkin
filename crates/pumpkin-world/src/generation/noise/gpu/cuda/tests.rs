@@ -159,6 +159,7 @@ fn live_cuda_noise_stage_matches_cpu() {
     }
 }
 
+#[expect(clippy::too_many_lines)]
 fn pipeline_readback_preserves_chunk_and_plane_order(engine: &Engine) {
     use crate::generation::noise::router::{
         chunk_density_function::ChunkNoiseFunctionBuilderOptions,

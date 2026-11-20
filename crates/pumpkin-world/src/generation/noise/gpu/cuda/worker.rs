@@ -89,7 +89,7 @@ pub(super) struct Lane {
 }
 
 impl Lane {
-    pub(super) fn new(
+    pub(super) const fn new(
         stream: Arc<CudaStream>,
         kernel: CudaFunction,
         terrain_pair: bool,
@@ -106,7 +106,7 @@ impl Lane {
         }
     }
 
-    pub(super) fn enable_selection(&mut self) {
+    pub(super) const fn enable_selection(&mut self) {
         self.select_density = true;
     }
 
@@ -114,7 +114,7 @@ impl Lane {
         self.smear_table = Some(smear_table::Cache::new(prepare));
     }
 
-    pub(super) fn run(mut self, rx: Receiver<Request>, disabled: Arc<AtomicBool>) {
+    pub(super) fn run(mut self, rx: &Receiver<Request>, disabled: &AtomicBool) {
         let mut pending = Vec::with_capacity(MAX_BATCH);
         let mut batch = Vec::with_capacity(MAX_BATCH);
         while let Ok(Request::Volume(first)) = rx.recv() {
@@ -140,7 +140,7 @@ impl Lane {
                 );
                 batch.push(first);
                 if let Err(error) = self.dispatch(&batch) {
-                    disable(&disabled, error);
+                    disable(disabled, error);
                 }
                 // Dropping the sender wakes every caller, including on CUDA errors.
                 batch.clear();
@@ -150,8 +150,8 @@ impl Lane {
 
     pub(super) fn run_grids(
         mut self,
-        rx: Receiver<Request>,
-        disabled: Arc<AtomicBool>,
+        rx: &Receiver<Request>,
+        disabled: &AtomicBool,
         pipeline: bool,
         terrain: bool,
     ) {
@@ -197,7 +197,7 @@ impl Lane {
             // Index zero supplies the canonical sampler descriptors for the launch.
             batch.insert(0, first);
             if let Err(error) = self.dispatch_grid(&batch, pipeline, terrain) {
-                disable(&disabled, error);
+                disable(disabled, error);
             }
             batch.clear();
         }
@@ -225,6 +225,7 @@ impl Lane {
         Ok(())
     }
 
+    #[expect(clippy::too_many_lines)]
     pub(super) fn dispatch_grid(
         &mut self,
         batch: &[grid::Job],
@@ -302,30 +303,31 @@ impl Lane {
                 selectors.slots[index] = selected_count as u32;
             }
         }
-        let mut blend = blended::Descriptor::default();
-        if let Some(plane) = &job.plan.blended {
+        let blend = if let Some(plane) = &job.plan.blended {
             let (layers, record_layers) = plane.layers.layers.device_ptr(&self.stream);
             let (smear, record_smear) = plane.layers.smear.device_ptr(&self.stream);
             reads.push(record_layers);
             reads.push(record_smear);
             let total = plane.layers.layers.len() as u32;
             max_layers = max_layers.max(total);
-            blend = blended::Descriptor {
+            blended::Descriptor {
                 layers,
                 smear,
                 tail: plane.tail,
                 main: plane.layers.main,
                 min: plane.layers.min,
                 total,
-            };
-        }
+            }
+        } else {
+            blended::Descriptor::default()
+        };
         let mut origins = GridOrigins([0; MAX_GRID_CHUNKS * 3]);
-        for (coords, item) in origins.0.chunks_exact_mut(3).zip(batch) {
-            coords.copy_from_slice(&[
+        for (coords, item) in origins.0.as_chunks_mut::<3>().0.iter_mut().zip(batch) {
+            *coords = [
                 item.volume.min_block_x,
                 item.volume.min_block_y,
                 item.volume.min_block_z,
-            ]);
+            ];
         }
         let pair_columns = self.terrain_pair
             && v.size_x > 1
@@ -449,12 +451,12 @@ impl Lane {
             return Ok(());
         };
         let mut origins = Origins([0; MAX_BATCH * 3]);
-        for (coords, job) in origins.0.chunks_exact_mut(3).zip(batch) {
-            coords.copy_from_slice(&[
+        for (coords, job) in origins.0.as_chunks_mut::<3>().0.iter_mut().zip(batch) {
+            *coords = [
                 job.volume.min_block_x,
                 job.volume.min_block_y,
                 job.volume.min_block_z,
-            ]);
+            ];
         }
 
         let layers = first.layers.len() as u32;

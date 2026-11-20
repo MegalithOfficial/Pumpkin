@@ -34,7 +34,7 @@ pub(super) struct Plane {
     pub selection: Option<selection::Selection>,
 }
 
-pub(crate) struct Plan {
+pub struct Plan {
     pub(super) volume: DensityVolume,
     pub(super) indices: Vec<(usize, Option<usize>)>,
     pub(super) fused_mask: u32,
@@ -111,18 +111,18 @@ struct Prefetched {
     scheduled: bool,
 }
 
-pub(crate) struct PreparedGrid {
+pub struct PreparedGrid {
     target: DensityVolume,
     batch: Prefetched,
 }
 
 impl PreparedGrid {
-    pub(crate) fn activate(self, generator: &VanillaGenerator) -> Option<EarlyGridScope<'_>> {
+    pub fn activate(self, generator: &VanillaGenerator) -> Option<EarlyGridScope<'_>> {
         if CHECKING_CPU.get() || EARLY_GRID.with_borrow(Option::is_some) {
             return None;
         }
         EARLY_GRID.set(Some(EarlyGrid {
-            source: &generator.base_router.noise,
+            source: &raw const generator.base_router.noise,
             target: self.target,
             batch: Some(self.batch),
         }));
@@ -158,7 +158,7 @@ thread_local! {
     static EARLY_GRID: RefCell<Option<EarlyGrid>> = const { RefCell::new(None) };
 }
 
-pub(crate) struct EarlyGridScope<'a>(PhantomData<(&'a ProtoNoiseRouter, Rc<()>)>);
+pub struct EarlyGridScope<'a>(PhantomData<(&'a ProtoNoiseRouter, Rc<()>)>);
 
 impl Drop for EarlyGridScope<'_> {
     fn drop(&mut self) {
@@ -208,6 +208,7 @@ struct CandidateGrid {
     selections: usize,
 }
 
+#[expect(clippy::too_many_lines, clippy::fn_params_excessive_bools)]
 fn candidates(
     stack: &[Component<'_>],
     volume: &DensityVolume,
@@ -223,12 +224,11 @@ fn candidates(
         let Some((index, volume)) = pending.pop() else {
             break;
         };
-        let seen = match visited.iter_mut().find(|(key, _)| *key == volume) {
-            Some((_, seen)) => seen,
-            None => {
-                visited.push((volume, vec![false; stack.len()]));
-                &mut visited.last_mut()?.1
-            }
+        let seen = if let Some((_, seen)) = visited.iter_mut().find(|(key, _)| *key == volume) {
+            seen
+        } else {
+            visited.push((volume, vec![false; stack.len()]));
+            &mut visited.last_mut()?.1
         };
         if std::mem::replace(&mut seen[index], true) {
             continue;
@@ -246,19 +246,18 @@ fn candidates(
             if !(256..=MAX_SAMPLES / 2).contains(&size) || volume.size_z > 65535 {
                 continue;
             }
-            let grid = match grids.iter_mut().find(|grid| grid.volume == volume) {
-                Some(grid) => grid,
-                None => {
-                    grids.push(CandidateGrid {
-                        volume,
-                        indices: Vec::new(),
-                        blended: None,
-                        fused: 0,
-                        regular_leaves: 0,
-                        selections: 0,
-                    });
-                    grids.last_mut()?
-                }
+            let grid = if let Some(grid) = grids.iter_mut().find(|grid| grid.volume == volume) {
+                grid
+            } else {
+                grids.push(CandidateGrid {
+                    volume,
+                    indices: Vec::new(),
+                    blended: None,
+                    fused: 0,
+                    regular_leaves: 0,
+                    selections: 0,
+                });
+                grids.last_mut()?
             };
             let limit = MAX_SAMPLES / size - usize::from(reserve_binary);
             if let Some(selection) = selection {
@@ -307,7 +306,7 @@ fn candidates(
             Component::Chunk(ChunkSpecificNoiseFunctionComponent::Cache(cache))
                 if cache.needs_volume(&volume) =>
             {
-                push(cache.input_index)
+                push(cache.input_index);
             }
             Component::Chunk(ChunkSpecificNoiseFunctionComponent::Interpolated(interpolated)) => {
                 if let Some(corners) = interpolated.input_volume(&volume) {
@@ -501,7 +500,7 @@ fn enqueue(
     })
 }
 
-pub(crate) fn prefetch_chunk(
+pub fn prefetch_chunk(
     generator: &VanillaGenerator,
     chunk_x: i32,
     chunk_z: i32,
@@ -512,7 +511,7 @@ pub(crate) fn prefetch_chunk(
     prepare_chunk(generator, chunk_x, chunk_z, None)?.activate(generator)
 }
 
-pub(crate) fn prepare_chunk(
+pub fn prepare_chunk(
     generator: &VanillaGenerator,
     chunk_x: i32,
     chunk_z: i32,
@@ -573,7 +572,7 @@ fn translate_volume(mut volume: DensityVolume, target: &DensityVolume) -> Option
     Some(volume)
 }
 
-pub(crate) fn try_sample_density(
+pub fn try_sample_density(
     stack: &mut [Component<'_>],
     out: &mut [f32],
     volume: &DensityVolume,
@@ -708,7 +707,7 @@ fn early_batch_can_only_bind_once_to_its_router_and_volume() {
     let neighbor = DensityVolume::with_block_step(16, 384, 16, -96, -64, 144);
     let corners = DensityVolume::new(5, 49, 5, -112, -64, 144, 4, 8, 4);
     let mut pending = EarlyGrid {
-        source: &original.noise,
+        source: &raw const original.noise,
         target,
         batch: Some(Prefetched {
             base: 0,

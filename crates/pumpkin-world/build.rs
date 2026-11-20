@@ -35,7 +35,7 @@ enum ArchPlan {
 }
 
 fn main() -> io::Result<()> {
-    let cuda_dir = "src/generation/noise/gpu/cuda";
+    let cuda_dir = "src/generation/noise/gpu/cuda/kernels";
     let vulkan_dir = "src/generation/noise/gpu/vulkan";
     println!("cargo:rerun-if-changed={cuda_dir}/density.cuh");
     println!("cargo:rerun-if-changed={cuda_dir}/worldgen.cu");

@@ -1,7 +1,7 @@
 use cudarc::driver::DeviceRepr;
 
 #[repr(C)]
-pub(crate) struct CudaLayer {
+pub struct CudaLayer {
     pub(crate) offset_x: f64,
     pub(crate) offset_y: f64,
     pub(crate) offset_z: f64,

@@ -2,8 +2,8 @@
 mod abi;
 mod blended;
 mod fusion;
-pub(crate) use blended::BlendedResident;
-pub(crate) mod grid;
+pub use blended::BlendedResident;
+pub mod grid;
 mod selection;
 mod smear_table;
 mod worker;
@@ -34,7 +34,7 @@ use super::super::router::{
 };
 use abi::CudaLayer;
 
-pub(crate) type ResidentLayers = OnceLock<Option<Arc<CudaSlice<CudaLayer>>>>;
+pub type ResidentLayers = OnceLock<Option<Arc<CudaSlice<CudaLayer>>>>;
 const DEFAULT_LANES: usize = 2;
 const MAX_AUTO_LANES: usize = 4;
 const MAX_LANES: usize = 8;
@@ -289,8 +289,7 @@ impl DeviceCapabilities {
             concurrent_kernels: attr(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_CONCURRENT_KERNELS)
                 .map(|v| v != 0),
             host_cpus: std::thread::available_parallelism()
-                .map(std::num::NonZeroUsize::get)
-                .unwrap_or(DEFAULT_LANES * 2),
+                .map_or(DEFAULT_LANES * 2, std::num::NonZeroUsize::get),
         }
     }
 
@@ -346,10 +345,10 @@ fn start(device: usize, configured_streams: usize) -> Result<Engine, Box<dyn std
     let gpu = context
         .name()
         .unwrap_or_else(|_| String::from("unknown GPU"));
-    let arch = context
-        .compute_capability()
-        .map(|(major, minor)| format!("sm_{major}{minor}"))
-        .unwrap_or_else(|_| String::from("unknown arch"));
+    let arch = context.compute_capability().map_or_else(
+        |_| String::from("unknown arch"),
+        |(major, minor)| format!("sm_{major}{minor}"),
+    );
 
     let module = context
         .load_module(Ptx::from_binary(
@@ -382,7 +381,7 @@ fn start(device: usize, configured_streams: usize) -> Result<Engine, Box<dyn std
         std::thread::Builder::new()
             .name(format!("worldgen-cuda-{index}"))
             .spawn(move || {
-                worker.run_grids(receiver, disabled, true, true);
+                worker.run_grids(&receiver, &disabled, true, true);
             })?;
     }
     ACTIVE_DEVICE.store(device, Ordering::Relaxed);
@@ -435,30 +434,32 @@ fn start_from_config(config: WorldgenConfig) -> Result<Option<Engine>, Box<dyn s
     }
 }
 
-fn initialized_engine(config: WorldgenConfig) -> &'static Option<Engine> {
-    ENGINE.get_or_init(|| match start_from_config(config) {
-        Ok(Some(engine)) => Some(engine),
-        Ok(None) => {
-            tracing::info!("World generation uses CPU");
-            None
-        }
-        Err(error) => {
-            tracing::warn!("World generation falling back to CPU: {error}");
-            None
-        }
-    })
+fn initialized_engine(config: WorldgenConfig) -> Option<&'static Engine> {
+    ENGINE
+        .get_or_init(|| match start_from_config(config) {
+            Ok(Some(engine)) => Some(engine),
+            Ok(None) => {
+                tracing::info!("World generation uses CPU");
+                None
+            }
+            Err(error) => {
+                tracing::warn!("World generation falling back to CPU: {error}");
+                None
+            }
+        })
+        .as_ref()
 }
 
 pub(in crate::generation) fn initialize(config: WorldgenConfig) {
     let _ = initialized_engine(config);
 }
 
-pub(crate) fn scheduled_lookahead_enabled() -> bool {
+pub fn scheduled_lookahead_enabled() -> bool {
     engine().is_some()
 }
 
 fn engine() -> Option<&'static Engine> {
-    let engine = initialized_engine(WorldgenConfig::default()).as_ref()?;
+    let engine = initialized_engine(WorldgenConfig::default())?;
     (!engine.disabled.load(Ordering::Acquire)).then_some(engine)
 }
 
@@ -498,7 +499,7 @@ fn resident_layers(engine: &Engine, noise: &Noise) -> Option<Arc<CudaSlice<CudaL
             }
         }
     });
-    resident.as_ref().cloned()
+    resident.clone()
 }
 
 fn submit(engine: &Engine, job: Request) -> bool {
@@ -515,7 +516,7 @@ fn submit(engine: &Engine, job: Request) -> bool {
     }
 }
 
-pub(crate) fn try_volume(stack: &mut [Component<'_>], out: &mut [f32], v: &DensityVolume) -> bool {
+pub fn try_volume(stack: &mut [Component<'_>], out: &mut [f32], v: &DensityVolume) -> bool {
     // Tiny fallback volumes occur during scalar interpolation and do not amortize a launch.
     if CHECKING_CPU.get()
         || !(256..=MAX_SAMPLES).contains(&out.len())

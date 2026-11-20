@@ -136,7 +136,7 @@ pub enum EarlyGridScope<'a> {
 }
 
 #[cfg(feature = "gpu-worldgen")]
-#[expect(clippy::needless_bool)]
+#[allow(clippy::needless_bool)]
 pub fn lookahead_enabled() -> bool {
     #[cfg(feature = "cuda-worldgen")]
     if cuda::scheduled_lookahead_enabled() {
@@ -150,6 +150,7 @@ pub fn lookahead_enabled() -> bool {
 }
 
 #[cfg(feature = "gpu-worldgen")]
+#[allow(clippy::needless_pass_by_value)]
 pub fn prepare_chunk(
     generator: &VanillaGenerator,
     chunk_x: i32,
@@ -157,7 +158,9 @@ pub fn prepare_chunk(
     cancel: Option<Arc<AtomicBool>>,
 ) -> Option<PreparedGrid> {
     #[cfg(feature = "cuda-worldgen")]
-    if let Some(grid) = cuda::grid::prepare_chunk(generator, chunk_x, chunk_z, cancel.clone()) {
+    if let Some(grid) =
+        cuda::grid::prepare_chunk(generator, chunk_x, chunk_z, cancel.as_ref().map(Arc::clone))
+    {
         return Some(PreparedGrid::Cuda(grid));
     }
     #[cfg(feature = "vulkan-worldgen")]
@@ -185,7 +188,7 @@ pub fn prefetch_chunk(
 }
 
 #[cfg(feature = "gpu-worldgen")]
-#[expect(clippy::needless_bool, clippy::needless_pass_by_ref_mut)]
+#[allow(clippy::needless_bool, clippy::needless_pass_by_ref_mut)]
 pub fn try_volume(
     stack: &mut [ChunkNoiseFunctionComponent<'_>],
     out: &mut [f32],
@@ -203,7 +206,7 @@ pub fn try_volume(
 }
 
 #[cfg(feature = "gpu-worldgen")]
-#[expect(clippy::needless_bool)]
+#[allow(clippy::needless_bool)]
 pub fn try_sample_density(
     stack: &mut [ChunkNoiseFunctionComponent<'_>],
     out: &mut [f32],

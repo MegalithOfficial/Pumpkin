@@ -7,9 +7,9 @@ use super::{
     Tail, abi::CudaLayer, disable,
 };
 
-pub(crate) type BlendedResident = OnceLock<Option<Arc<BlendedLayers>>>;
+pub type BlendedResident = OnceLock<Option<Arc<BlendedLayers>>>;
 
-pub(crate) struct BlendedLayers {
+pub struct BlendedLayers {
     pub(super) layers: CudaSlice<CudaLayer>,
     pub(super) smear: CudaSlice<f64>,
     pub(super) main: u32,
@@ -98,6 +98,5 @@ pub(super) fn resident(
                 }
             }
         })
-        .as_ref()
-        .cloned()
+        .clone()
 }
